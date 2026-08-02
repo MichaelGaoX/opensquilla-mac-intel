@@ -66,7 +66,8 @@ Release install commands use published GitHub release assets. Python wheel insta
 embedded in the wheel filename.
 
 For 0.5.2 desktop use, prefer the packaged desktop installers from
-the GitHub Release: `OpenSquilla-0.5.2-mac-arm64.dmg` on macOS and
+the GitHub Release: `OpenSquilla-0.5.2-mac-arm64.dmg` on macOS Apple Silicon,
+`OpenSquilla-0.5.2-mac-x64.dmg` on macOS Intel, and
 `OpenSquilla-0.5.2-win-x64.exe` on Windows.
 
 | Path | Audience | When to use |
@@ -117,10 +118,12 @@ The 0.5.2 desktop installers package the Vue control console and
 gateway runtime in an Electron shell.
 
 - macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.2/OpenSquilla-0.5.2-mac-arm64.dmg>
+- macOS Intel: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.2/OpenSquilla-0.5.2-mac-x64.dmg>
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.2/OpenSquilla-0.5.2-win-x64.exe>
 
 For faster Mainland China downloads, use the OSS direct-download aliases:
 - macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
+- macOS Intel: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-x64.dmg>
 - Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
 
 These fixed links advance only after a newer eligible release passes mirror

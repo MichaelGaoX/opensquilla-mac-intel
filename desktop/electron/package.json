@@ -15,6 +15,7 @@
     "build:web": "cd ../../opensquilla-webui && npm ci && npm run build",
     "dev": "npm run build && electron .",
     "dist:local": "npm run build:web && npm run build:gateway && npm run dist",
+    "dist:mac-intel": "npm run build:gateway && npm run build && electron-builder --mac --x64",
     "pack:local": "npm run build:web && npm run build:gateway && npm run pack",
     "verify:icons": "node scripts/verify-icon-config.mjs",
     "verify:package": "npm run verify:icons && node scripts/verify-package.mjs",
