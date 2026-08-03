@@ -130,6 +130,8 @@ jobs:
           echo "Verified: wheelhouse-release.yml is Intel-only"
 
       - name: Apply custom patches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/patches
