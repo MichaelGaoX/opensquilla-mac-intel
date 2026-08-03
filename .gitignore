@@ -121,3 +121,4 @@ opensquilla-webui/public/music/**/*.ogg
 opensquilla-webui/public/music/**/*.flac
 opensquilla-webui/public/music/**/*.wav
 opensquilla-webui/public/music/playlist.local.json
+wheels/
