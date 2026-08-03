@@ -15,6 +15,15 @@
   <a href="https://github.com/MichaelGaoX/opensquilla-mac-intel/releases">📦 Intel 下载</a>
 </p>
 
+<p align="center">
+  <b>中文</b> ·
+  <a href="README.en.md">English</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.fr.md">Français</a> ·
+  <a href="README.de.md">Deutsch</a> ·
+  <a href="README.es.md">Español</a>
+</p>
+
 ---
 
 ## 这是什么
