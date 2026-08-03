@@ -19,9 +19,6 @@ name: Container Images
 # flip ghcr.io/<owner>/<repo> to public in the package settings once.
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       publish:

@@ -1,0 +1,406 @@
+name: Sync Upstream & Build Intel
+
+on:
+  schedule:
+    # Every 3 hours
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Check upstream for new tags
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.check.outputs.new_tag }}
+    steps:
+      - name: Checkout downstream
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch latest upstream tags
+        id: check
+        run: |
+          set -euo pipefail
+          # Fetch upstream tags without cloning the full repo
+          git ls-remote --tags --sort=-version:refname \
+            https://github.com/opensquilla/opensquilla.git \
+            'refs/tags/v*' \
+            > /tmp/upstream-tags.txt
+
+          # Get the latest upstream stable tag (exclude rc, alpha, beta, dev, deploy)
+          LATEST_UPSTREAM=$(grep -oP 'refs/tags/v\d+\.\d+\.\d+$' /tmp/upstream-tags.txt | head -1 || true)
+
+          if [ -z "$LATEST_UPSTREAM" ]; then
+            echo "No stable upstream tag found"
+            echo "new_tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG_NAME="${LATEST_UPSTREAM#refs/tags/}"
+          echo "Latest upstream stable tag: $TAG_NAME"
+
+          # Check if we already have this tag
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag $TAG_NAME already exists downstream, nothing to sync"
+            echo "new_tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "new_tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "New upstream tag found: $TAG_NAME"
+
+  build:
+    name: Sync ${{ needs.sync.outputs.new_tag }} and build Intel
+    needs: sync
+    if: needs.sync.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout upstream at tag
+        uses: actions/checkout@v4
+        with:
+          repository: opensquilla/opensquilla
+          ref: ${{ needs.sync.outputs.new_tag }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply macOS Intel patches
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.sync.outputs.new_tag }}"
+          TAG="${VERSION#v}"
+
+          # 1. Pin onnxruntime <= 1.23.0 for macOS Intel wheels
+          sed -i.bak 's/"onnxruntime>=1.17"/"onnxruntime>=1.17,<=1.23.0"/' pyproject.toml
+          # Also handle if already has version constraint
+          sed -i.bak 's/"onnxruntime>=1.17,<=[^"]*"/"onnxruntime>=1.17,<=1.23.0"/' pyproject.toml
+          rm -f pyproject.toml.bak
+
+          # 2. Set Python version to 3.12.12
+          echo "3.12.12" > .python-version
+
+          # 3. Replace wheelhouse-release.yml with Intel-only version
+          cat > .github/workflows/wheelhouse-release.yml << 'WFEOL'
+        name: Release macOS Intel Assets
+
+        on:
+          push:
+            tags:
+              - "v*"
+          workflow_dispatch:
+            inputs:
+              tag:
+                description: Optional existing tag to upload artifacts to
+                required: false
+                default: ""
+
+        permissions:
+          contents: read
+
+        concurrency:
+          group: release-assets-intel-${{
+            github.event_name == 'push' && github.ref_name ||
+            github.event.inputs.tag || github.run_id }}
+          cancel-in-progress: false
+
+        env:
+          RELEASE_TAG: ${{
+            github.event_name == 'push' && github.ref_name ||
+            github.event.inputs.tag }}
+
+        jobs:
+          build-control-ui:
+            name: Build verified Web UI artifact
+            runs-on: ubuntu-latest
+            timeout-minutes: 15
+            steps:
+              - name: Checkout
+                uses: actions/checkout@v4
+                with:
+                  ref: ${{
+                    env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+              - name: Detect Web UI artifact contract
+                id: webui-contract
+                shell: bash
+                run: |
+                  set -euo pipefail
+                  if [[ -f opensquilla-webui/.node-version \
+                     && -f opensquilla-webui/package-lock.json \
+                     && -f opensquilla-webui/scripts/verify-dist.mjs ]]; then
+                    echo "mode=source-built" >> "${GITHUB_OUTPUT}"
+                  elif [[ -f src/opensquilla/gateway/static/dist/index.html ]]; then
+                    echo "mode=legacy-committed" >> "${GITHUB_OUTPUT}"
+                  else
+                    echo "No source-build contract or legacy committed Web UI artifact found" >&2
+                    exit 1
+                  fi
+
+              - name: Set up Node.js
+                if: steps.webui-contract.outputs.mode == 'source-built'
+                uses: actions/setup-node@v4
+                with:
+                  node-version-file: opensquilla-webui/.node-version
+                  cache: npm
+                  cache-dependency-path: opensquilla-webui/package-lock.json
+
+              - name: Install Web UI dependencies
+                if: steps.webui-contract.outputs.mode == 'source-built'
+                working-directory: opensquilla-webui
+                run: npm ci
+
+              - name: Build and verify Web UI
+                if: steps.webui-contract.outputs.mode == 'source-built'
+                working-directory: opensquilla-webui
+                run: |
+                  npm run build
+                  node scripts/verify-dist.mjs
+
+              - name: Validate legacy committed Web UI artifact
+                if: steps.webui-contract.outputs.mode == 'legacy-committed'
+                shell: bash
+                run: |
+                  python - <<'PY'
+                  import json
+                  from pathlib import Path
+                  root = Path("src/opensquilla/gateway/static/dist")
+                  assert (root / "index.html").is_file(), "legacy Web UI entrypoint is missing"
+                  allowed_music = {"music/README.md", "music/playlist.json"}
+                  personal_music = sorted(
+                      path.relative_to(root).as_posix()
+                      for path in (root / "music").rglob("*")
+                      if path.is_file() and path.relative_to(root).as_posix() not in allowed_music
+                  ) if (root / "music").is_dir() else []
+                  assert not personal_music, (
+                      f"personal BGM is forbidden in legacy release artifacts: {personal_music}"
+                  )
+                  playlist = root / "music/playlist.json"
+                  if playlist.is_file():
+                      data = json.loads(playlist.read_text(encoding="utf-8"))
+                      assert isinstance(data, dict) and data.get("tracks") == [], (
+                          "legacy official music/playlist.json must keep tracks empty"
+                      )
+                  print("Validated legacy committed Web UI artifact")
+                  PY
+
+              - name: Upload Web UI artifact
+                uses: actions/upload-artifact@v4
+                with:
+                  name: opensquilla-release-webui-dist
+                  path: src/opensquilla/gateway/static/dist/
+                  if-no-files-found: error
+                  retention-days: 31
+                  overwrite: true
+
+          build-desktop-macos-intel:
+            name: Build macOS Electron installer (Intel)
+            needs: build-control-ui
+            runs-on: macos-latest
+            timeout-minutes: 150
+            steps:
+              - name: Checkout
+                uses: actions/checkout@v4
+                with:
+                  lfs: true
+                  ref: ${{
+                    env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+              - name: Download verified Web UI artifact
+                uses: actions/download-artifact@v4
+                with:
+                  name: opensquilla-release-webui-dist
+                  path: src/opensquilla/gateway/static/dist/
+
+              - name: Hydrate router assets
+                run: git lfs pull --include="src/opensquilla/squilla_router/models/**"
+
+              - name: Verify router assets are hydrated
+                shell: bash
+                run: |
+                  python - <<'PY'
+                  from pathlib import Path
+                  root = Path("src/opensquilla/squilla_router/models/v4.2_phase3_inference")
+                  required = [
+                      root / "PROVENANCE.md",
+                      root / "artifact_manifest.json",
+                      root / "bge_onnx" / "model.onnx",
+                      root / "features" / "tfidf.pkl",
+                      root / "lgbm_main.bin",
+                      root / "mlp" / "model.onnx",
+                      root / "router.runtime.yaml",
+                  ]
+                  for path in required:
+                      assert path.is_file(), f"missing router asset: {path}"
+                      prefix = path.read_bytes()[:80]
+                      assert not prefix.startswith(b"version https://git-lfs.github.com"), \
+                          f"router asset is still an LFS pointer: {path}"
+                  print("All router assets hydrated")
+                  PY
+
+              - name: Set up Python 3.12
+                uses: actions/setup-python@v5
+                with:
+                  python-version: "3.12"
+
+              - name: Set up Node.js
+                uses: actions/setup-node@v4
+                with:
+                  node-version: "22.12.0"
+                  cache: npm
+                  cache-dependency-path: desktop/electron/package-lock.json
+
+              - name: Install Electron dependencies
+                working-directory: desktop/electron
+                run: npm ci
+
+              - name: Build macOS Intel installer (x64 cross-compile)
+                working-directory: desktop/electron
+                run: |
+                  npm run build:gateway
+                  npm run build
+                  npx electron-builder --mac --x64 --publish never
+
+              - name: Verify Electron package
+                working-directory: desktop/electron
+                run: npm run verify:package
+
+              - name: Smoke packaged gateway
+                working-directory: desktop/electron
+                env:
+                  OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"
+                  OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS: "240000"
+                run: npm run verify:gateway-smoke
+
+              - name: List macOS artifacts
+                run: find dist/desktop-electron -maxdepth 2 -type f -print
+
+              - name: Upload macOS Intel artifacts
+                uses: actions/upload-artifact@v4
+                with:
+                  name: opensquilla-electron-macos-intel
+                  path: |
+                    dist/desktop-electron/*-mac-x64.dmg
+                    dist/desktop-electron/*-mac-x64.zip
+                    dist/desktop-electron/*-mac-x64.dmg.blockmap
+                    dist/desktop-electron/*-mac-x64.zip.blockmap
+                    dist/desktop-electron/latest-mac.yml
+                  overwrite: true
+
+          publish-release:
+            name: Publish macOS Intel release
+            needs: build-desktop-macos-intel
+            runs-on: ubuntu-latest
+            timeout-minutes: 20
+            permissions:
+              contents: write
+            steps:
+              - name: Checkout release notes
+                if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
+                uses: actions/checkout@v4
+                with:
+                  ref: ${{ env.RELEASE_TAG }}
+
+              - name: Download macOS Intel artifacts
+                uses: actions/download-artifact@v4
+                with:
+                  name: opensquilla-electron-macos-intel
+                  path: dist
+
+              - name: Regenerate release checksums
+                shell: bash
+                run: |
+                  python - <<'PY'
+                  import hashlib, os, re
+                  from pathlib import Path
+
+                  def desktop_asset_version(version: str) -> str:
+                      return re.sub(r"(?<=\d)(a|b|rc)(\d+)$", r"-\1\2", version)
+
+                  dist = Path("dist")
+                  tag = os.environ["RELEASE_TAG"]
+                  version = tag.removeprefix("v")
+                  desktop_version = desktop_asset_version(version)
+
+                  asset_names = [
+                      f"OpenSquilla-{desktop_version}-mac-x64.dmg",
+                      f"OpenSquilla-{desktop_version}-mac-x64.zip",
+                      f"OpenSquilla-{desktop_version}-mac-x64.dmg.blockmap",
+                      f"OpenSquilla-{desktop_version}-mac-x64.zip.blockmap",
+                      "latest-mac.yml",
+                  ]
+                  assets = [dist / name for name in asset_names]
+                  for path in assets:
+                      assert path.is_file(), f"missing release asset: {path.name}"
+
+                  lines = [
+                      f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+                      for path in assets
+                  ]
+                  (dist / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+                  print("SHA256SUMS regenerated")
+                  PY
+
+              - name: Upload to GitHub Release
+                if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
+                env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+                  TAG: ${{ env.RELEASE_TAG }}
+                shell: bash
+                run: |
+                  set -euo pipefail
+                  TAG="${TAG}"
+                  VERSION="${TAG#v}"
+
+                  # Clean up any existing draft release
+                  gh release delete "${TAG}" --yes 2>/dev/null || true
+                  git push origin ":${TAG}" 2>/dev/null || true
+
+                  # Create draft release
+                  gh release create "${TAG}" \
+                    --title "OpenSquilla ${VERSION} macOS Intel" \
+                    --notes "macOS Intel (x64) build of OpenSquilla ${VERSION}.
+
+                  Built from upstream [opensquilla/opensquilla](https://github.com/opensquilla/opensquilla) tag \`${TAG}\`.
+
+                  ### Downloads
+                  - [OpenSquilla-${VERSION}-mac-x64.dmg](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/OpenSquilla-${VERSION}-mac-x64.dmg)
+                  - [OpenSquilla-${VERSION}-mac-x64.zip](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/OpenSquilla-${VERSION}-mac-x64.zip)" \
+                    --draft \
+                    dist/*
+
+                  echo "Draft release created for ${TAG}"
+        WFEOL
+
+          # 4. Update desktop/electron/package.json version if needed
+          # (version is already set from upstream, but verify npm ci works)
+          node -e "
+            const pkg = require('./desktop/electron/package.json');
+            console.log('Desktop package version:', pkg.version);
+          "
+
+          echo "Patches applied for version $VERSION"
+
+      - name: Force push to downstream main
+        env:
+          DOWNSTREAM_REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          git remote add downstream "$DOWNSTREAM_REPO"
+          git push --force downstream HEAD:main
+
+      - name: Create and push tag
+        env:
+          DOWNSTREAM_REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          TAG="${{ needs.sync.outputs.new_tag }}"
+          VERSION="${TAG#v}"
+          git tag -a "$TAG" -m "OpenSquilla $VERSION macOS Intel"
+          git push downstream "$TAG"
+          echo "Pushed tag $TAG to downstream"
