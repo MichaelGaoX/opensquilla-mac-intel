@@ -9283,8 +9283,10 @@ interface ResolvedDesktopUpdate {
 }
 
 function desktopUpdatePlatform(): DesktopUpdatePlatform | null {
-  if (process.platform === 'darwin' && process.arch === 'arm64') return 'darwin-arm64'
-  if (process.platform === 'win32' && process.arch === 'x64') return 'win32-x64'
+  // This downstream fork builds macOS Intel only: the channel manifest carries
+  // a single darwin-x64 platform entry and GitHub discovery/downloads point at
+  // the fork's releases, which ship only mac-x64 assets.
+  if (process.platform === 'darwin' && process.arch === 'x64') return 'darwin-x64'
   return null
 }
 

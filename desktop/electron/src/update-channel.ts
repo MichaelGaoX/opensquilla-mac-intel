@@ -3,13 +3,16 @@ import { parseOpenSquillaReleaseTag, type ParsedReleaseTag } from './update-feed
 export const UPDATE_OSS_RELEASE_ROOT =
   'https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases'
 export const UPDATE_GITHUB_RELEASE_ROOT =
-  'https://github.com/opensquilla/opensquilla/releases/download'
+  'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download'
 export const UPDATE_GITHUB_RELEASE_PAGE_ROOT =
-  'https://github.com/opensquilla/opensquilla/releases/tag'
+  'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag'
 export const UPDATE_GITHUB_RELEASES_API_URL =
-  'https://api.github.com/repos/opensquilla/opensquilla/releases?per_page=100'
+  'https://api.github.com/repos/MichaelGaoX/opensquilla-mac-intel/releases?per_page=100'
 
-export type DesktopUpdatePlatform = 'darwin-arm64' | 'win32-x64'
+// This downstream fork builds macOS Intel only: the update channel carries a
+// single darwin-x64 platform entry and GitHub discovery/downloads resolve to
+// the fork's own releases (which ship only mac-x64 assets).
+export type DesktopUpdatePlatform = 'darwin-x64'
 export type DesktopUpdateSource = 'oss' | 'github'
 
 export interface UpdateChannelPlatformEntry {
@@ -133,10 +136,8 @@ function requiredReleaseAssets(version: ParsedReleaseTag): string[] {
   return [
     'SHA256SUMS',
     'latest-mac.yml',
-    'latest.yml',
-    `OpenSquilla-${appVersion}-mac-arm64.zip`,
-    `OpenSquilla-${appVersion}-mac-arm64.dmg`,
-    `OpenSquilla-${appVersion}-win-x64.exe`,
+    `OpenSquilla-${appVersion}-mac-x64.zip`,
+    `OpenSquilla-${appVersion}-mac-x64.dmg`,
   ]
 }
 
@@ -206,14 +207,10 @@ export function updateChannelManifestFromReleaseInventory(
     releaseUrl: `${UPDATE_GITHUB_RELEASE_PAGE_ROOT}/${best.tag}`,
     sha256sums: 'SHA256SUMS',
     platforms: {
-      'darwin-arm64': {
+      'darwin-x64': {
         feed: 'latest-mac.yml',
-        archive: `OpenSquilla-${version}-mac-arm64.zip`,
-        installer: `OpenSquilla-${version}-mac-arm64.dmg`,
-      },
-      'win32-x64': {
-        feed: 'latest.yml',
-        installer: `OpenSquilla-${version}-win-x64.exe`,
+        archive: `OpenSquilla-${version}-mac-x64.zip`,
+        installer: `OpenSquilla-${version}-mac-x64.dmg`,
       },
     },
   })
@@ -256,7 +253,7 @@ export function validateUpdateChannelManifest(payload: unknown): UpdateChannelMa
   }
   const platforms = raw.platforms as Record<string, unknown>
   const parsedPlatforms = {} as Record<DesktopUpdatePlatform, UpdateChannelPlatformEntry>
-  for (const platform of ['darwin-arm64', 'win32-x64'] as const) {
+  for (const platform of ['darwin-x64'] as const) {
     const entry = platforms[platform]
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       return invalid(`channel manifest is missing ${platform}`)
@@ -272,15 +269,12 @@ export function validateUpdateChannelManifest(payload: unknown): UpdateChannelMa
   }
 
 
-  const expectedMacArchive = `OpenSquilla-${version}-mac-arm64.zip`
-  const expectedMacInstaller = `OpenSquilla-${version}-mac-arm64.dmg`
-  const expectedWindowsInstaller = `OpenSquilla-${version}-win-x64.exe`
+  const expectedMacX64Archive = `OpenSquilla-${version}-mac-x64.zip`
+  const expectedMacX64Installer = `OpenSquilla-${version}-mac-x64.dmg`
   if (
-    parsedPlatforms['darwin-arm64'].feed !== 'latest-mac.yml'
-    || parsedPlatforms['darwin-arm64'].archive !== expectedMacArchive
-    || parsedPlatforms['darwin-arm64'].installer !== expectedMacInstaller
-    || parsedPlatforms['win32-x64'].feed !== 'latest.yml'
-    || parsedPlatforms['win32-x64'].installer !== expectedWindowsInstaller
+    parsedPlatforms['darwin-x64'].feed !== 'latest-mac.yml'
+    || parsedPlatforms['darwin-x64'].archive !== expectedMacX64Archive
+    || parsedPlatforms['darwin-x64'].installer !== expectedMacX64Installer
   ) {
     return invalid('channel manifest platform assets do not match the release version')
   }

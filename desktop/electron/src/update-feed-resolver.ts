@@ -9,8 +9,10 @@
 // channels (rc1 vs rc2), so rc1 would never see rc2. This module resolves the
 // correct candidate release ourselves; a generic feed is then pointed at it.
 
-export const GITHUB_UPDATE_OWNER = 'opensquilla'
-export const GITHUB_UPDATE_REPO = 'opensquilla'
+// The downstream fork hosts the macOS Intel builds, so the GitHub prerelease
+// resolution must look at the fork's releases rather than upstream's.
+export const GITHUB_UPDATE_OWNER = 'MichaelGaoX'
+export const GITHUB_UPDATE_REPO = 'opensquilla-mac-intel'
 export const MAC_UPDATE_FEED_ASSET = 'latest-mac.yml'
 
 export interface ParsedReleaseTag {

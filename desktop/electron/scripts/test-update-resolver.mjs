@@ -42,17 +42,13 @@ const channelManifest = (tag, version, prerelease = true) => ({
   baseVersion: version.replace(/-rc\d+$/, ''),
   prerelease,
   publishedAt: '2026-07-15T00:00:00Z',
-  releaseUrl: `https://github.com/opensquilla/opensquilla/releases/tag/${tag}`,
+  releaseUrl: `https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/${tag}`,
   sha256sums: 'SHA256SUMS',
   platforms: {
-    'darwin-arm64': {
+    'darwin-x64': {
       feed: 'latest-mac.yml',
-      archive: `OpenSquilla-${version}-mac-arm64.zip`,
-      installer: `OpenSquilla-${version}-mac-arm64.dmg`,
-    },
-    'win32-x64': {
-      feed: 'latest.yml',
-      installer: `OpenSquilla-${version}-win-x64.exe`,
+      archive: `OpenSquilla-${version}-mac-x64.zip`,
+      installer: `OpenSquilla-${version}-mac-x64.dmg`,
     },
   },
 })
@@ -64,7 +60,7 @@ assert.equal(updateChannelPathForVersion('not-a-version'), null)
 {
   const manifest = channelManifest('v0.5.0rc5', '0.5.0-rc5')
   assert.equal(validateUpdateChannelManifest(manifest).tag, 'v0.5.0rc5')
-  const mac = candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64')
+  const mac = candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-x64')
   assert.ok(mac)
   assert.equal(mac.version, '0.5.0-rc5')
   assert.equal(
@@ -73,17 +69,15 @@ assert.equal(updateChannelPathForVersion('not-a-version'), null)
   )
   assert.equal(
     updateAssetUrl(mac, 'github'),
-    'https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc5/OpenSquilla-0.5.0-rc5-mac-arm64.dmg',
+    'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download/v0.5.0rc5/OpenSquilla-0.5.0-rc5-mac-x64.dmg',
   )
-  const win = candidateFromUpdateChannel('0.5.0-rc4', manifest, 'win32-x64')
-  assert.equal(win?.installer, 'OpenSquilla-0.5.0-rc5-win-x64.exe')
 }
 
 assert.equal(
   candidateFromUpdateChannel(
     '0.5.0-rc5',
     channelManifest('v0.5.0rc4', '0.5.0-rc4'),
-    'darwin-arm64',
+    'darwin-x64',
   ),
   null,
 )
@@ -91,7 +85,7 @@ assert.equal(
   candidateFromUpdateChannel(
     '0.5.0-rc4',
     channelManifest('v0.5.0', '0.5.0', false),
-    'darwin-arm64',
+    'darwin-x64',
   )?.version,
   '0.5.0',
 )
@@ -99,7 +93,7 @@ assert.equal(
   candidateFromUpdateChannel(
     '0.5.0-rc4',
     channelManifest('v0.6.0rc1', '0.6.0-rc1'),
-    'darwin-arm64',
+    'darwin-x64',
   ),
   null,
 )
@@ -149,25 +143,25 @@ assert.throws(
   () => validateUpdateChannelManifest({
     ...channelManifest('v0.5.0rc5', '0.5.0-rc5'),
     tag: 'v0.5.0-rc.5',
-    releaseUrl: 'https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0-rc.5',
+    releaseUrl: 'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/v0.5.0-rc.5',
   }),
   /canonical/,
 )
 {
   const manifest = channelManifest('v0.5.0rc5', '0.5.0-rc5')
-  manifest.platforms['win32-x64'].installer = 'OpenSquilla-0.5.0-rc4-win-x64.exe'
+  manifest.platforms['darwin-x64'].installer = 'OpenSquilla-0.5.0-rc4-mac-x64.dmg'
   assert.throws(() => validateUpdateChannelManifest(manifest), /platform assets/)
 }
 {
   const manifest = channelManifest('v0.5.0rc5', '0.5.0-rc5')
-  manifest.platforms['darwin-arm64'].feed = 'custom.yml'
+  manifest.platforms['darwin-x64'].feed = 'custom.yml'
   assert.throws(() => validateUpdateChannelManifest(manifest), /platform assets/)
 }
 
 // Windows mirror downloads are trusted only after their bytes match the exact
 // asset entry in the canonical GitHub Release SHA256SUMS file.
 {
-  const asset = 'OpenSquilla-0.5.0-rc5-win-x64.exe'
+  const asset = 'OpenSquilla-0.5.0-rc5-mac-x64.dmg'
   const bytes = Buffer.from('verified windows installer bytes')
   const expected = createHash('sha256').update(bytes).digest('hex')
   const sums = `${'a'.repeat(64)}  another-asset.zip\n${expected.toUpperCase()} *${asset}\n`
@@ -238,7 +232,7 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
   assert.ok(c, 'rc1 should find rc2')
   assert.equal(c.tag, 'v0.5.0rc2')
   assert.equal(c.version, '0.5.0-rc2')
-  assert.equal(c.feedUrl, 'https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2')
+  assert.equal(c.feedUrl, 'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download/v0.5.0rc2')
 }
 
 // 2. A resolver-enabled client on 0.5.0-rc2 sees v0.5.0rc3.
@@ -340,10 +334,8 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
 const releaseAssets = (version) => [
   { name: 'SHA256SUMS' },
   { name: 'latest-mac.yml' },
-  { name: 'latest.yml' },
-  { name: `OpenSquilla-${version}-mac-arm64.zip` },
-  { name: `OpenSquilla-${version}-mac-arm64.dmg` },
-  { name: `OpenSquilla-${version}-win-x64.exe` },
+  { name: `OpenSquilla-${version}-mac-x64.zip` },
+  { name: `OpenSquilla-${version}-mac-x64.dmg` },
 ]
 const inventoryRelease = (tag, version, overrides = {}) => ({
   tag_name: tag,
@@ -369,11 +361,11 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
   assert.equal(manifest.prerelease, false)
   // The synthesized manifest satisfies the exact same contract as a mirrored one.
   assert.deepEqual(validateUpdateChannelManifest(manifest), manifest)
-  const candidate = candidateFromUpdateChannel('0.5.0', manifest, 'win32-x64')
-  assert.equal(candidate?.installer, 'OpenSquilla-0.5.1-win-x64.exe')
+  const candidate = candidateFromUpdateChannel('0.5.0', manifest, 'darwin-x64')
+  assert.equal(candidate?.installer, 'OpenSquilla-0.5.1-mac-x64.dmg')
   assert.equal(
     updateAssetUrl(candidate, 'github'),
-    'https://github.com/opensquilla/opensquilla/releases/download/v0.5.1/OpenSquilla-0.5.1-win-x64.exe',
+    'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download/v0.5.1/OpenSquilla-0.5.1-mac-x64.dmg',
   )
 }
 
@@ -382,7 +374,7 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
 {
   const incomplete = inventoryRelease('v0.5.2', '0.5.2')
   incomplete.assets = incomplete.assets.filter(
-    (asset) => asset.name !== 'OpenSquilla-0.5.2-win-x64.exe',
+    (asset) => asset.name !== 'OpenSquilla-0.5.2-mac-x64.dmg',
   )
   const manifest = updateChannelManifestFromReleaseInventory('0.5.0', [
     incomplete,
@@ -400,7 +392,7 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
     inventoryRelease('v0.5.0rc4', '0.5.0-rc4'),
   ])
   assert.equal(manifest?.tag, 'v0.5.0rc5')
-  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64')?.version, '0.5.0-rc5')
+  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-x64')?.version, '0.5.0-rc5')
 }
 {
   const manifest = updateChannelManifestFromReleaseInventory('0.5.0-rc4', [
@@ -418,7 +410,7 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
     inventoryRelease('v0.5.0rc4', '0.5.0-rc4'),
   ])
   assert.equal(manifest?.tag, 'v0.5.0rc4')
-  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64'), null)
+  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-x64'), null)
 }
 
 // Non-canonical tag spellings and disagreeing prerelease flags do not

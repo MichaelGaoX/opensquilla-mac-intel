@@ -23,4 +23,11 @@
 
 ## 示例
 
-当前尚无自定义补丁。如需添加，创建 `patches/custom.patch` 文件即可。
+- `patches/desktop-update-darwin-x64.patch` — 客户端自动更新通道改为 macOS Intel 单平台：
+  - `update-channel.ts`：平台收敛为 `darwin-x64`，GitHub 发现/下载源指向本 fork；资产要求改为 `mac-x64`（dmg/zip/latest-mac.yml/SHA256SUMS）
+  - `main.ts`：`desktopUpdatePlatform()` 只认 `darwin` + `x64`
+  - `update-feed-resolver.ts`：`GITHUB_UPDATE_OWNER/REPO` 指向本 fork
+  - `package.json`：repository / publish 指向本 fork
+  - 同步更新 `test-update-resolver.mjs`、`test-packaged-update-banner.mjs` 断言
+
+> 注意：若上游改动这些文件导致补丁冲突，`sync-upstream.yml` 会报错并停止，需要手动更新本补丁。

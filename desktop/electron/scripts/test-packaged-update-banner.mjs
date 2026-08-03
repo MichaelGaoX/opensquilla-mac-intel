@@ -90,7 +90,7 @@ const currentTag = `v${baseVersion}rc${currentRc}`
 const nextTag = `v${baseVersion}rc${nextRc}`
 const currentVersion = `${baseVersion}-rc${currentRc}`
 const nextVersion = `${baseVersion}-rc${nextRc}`
-const releaseUrl = `https://github.com/opensquilla/opensquilla/releases/tag/${nextTag}`
+const releaseUrl = `https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/${nextTag}`
 
 let requestCount = 0
 let releasePublished = false
@@ -101,17 +101,13 @@ const channelManifest = (tag, version) => ({
   baseVersion,
   prerelease: true,
   publishedAt: '2026-07-15T00:00:00Z',
-  releaseUrl: `https://github.com/opensquilla/opensquilla/releases/tag/${tag}`,
+  releaseUrl: `https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/${tag}`,
   sha256sums: 'SHA256SUMS',
   platforms: {
-    'darwin-arm64': {
+    'darwin-x64': {
       feed: 'latest-mac.yml',
-      archive: `OpenSquilla-${version}-mac-arm64.zip`,
-      installer: `OpenSquilla-${version}-mac-arm64.dmg`,
-    },
-    'win32-x64': {
-      feed: 'latest.yml',
-      installer: `OpenSquilla-${version}-win-x64.exe`,
+      archive: `OpenSquilla-${version}-mac-x64.zip`,
+      installer: `OpenSquilla-${version}-mac-x64.dmg`,
     },
   },
 })

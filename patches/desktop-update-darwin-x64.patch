@@ -1,0 +1,346 @@
+diff --git a/desktop/electron/package.json b/desktop/electron/package.json
+index 084d8d4a6..f4c2f8e9b 100644
+--- a/desktop/electron/package.json
++++ b/desktop/electron/package.json
+@@ -5,7 +5,7 @@
+   "description": "Electron desktop shell for the OpenSquilla Control UI.",
+   "repository": {
+     "type": "git",
+-    "url": "https://github.com/opensquilla/opensquilla.git"
++    "url": "https://github.com/MichaelGaoX/opensquilla-mac-intel.git"
+   },
+   "type": "module",
+   "main": "dist/main.js",
+@@ -78,8 +78,8 @@
+     "publish": [
+       {
+         "provider": "github",
+-        "owner": "opensquilla",
+-        "repo": "opensquilla"
++        "owner": "MichaelGaoX",
++        "repo": "opensquilla-mac-intel"
+       }
+     ],
+     "directories": {
+diff --git a/desktop/electron/scripts/test-packaged-update-banner.mjs b/desktop/electron/scripts/test-packaged-update-banner.mjs
+index 9fe5dec6e..b12519c32 100644
+--- a/desktop/electron/scripts/test-packaged-update-banner.mjs
++++ b/desktop/electron/scripts/test-packaged-update-banner.mjs
+@@ -90,7 +90,7 @@ const currentTag = `v${baseVersion}rc${currentRc}`
+ const nextTag = `v${baseVersion}rc${nextRc}`
+ const currentVersion = `${baseVersion}-rc${currentRc}`
+ const nextVersion = `${baseVersion}-rc${nextRc}`
+-const releaseUrl = `https://github.com/opensquilla/opensquilla/releases/tag/${nextTag}`
++const releaseUrl = `https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/${nextTag}`
+ 
+ let requestCount = 0
+ let releasePublished = false
+@@ -101,17 +101,13 @@ const channelManifest = (tag, version) => ({
+   baseVersion,
+   prerelease: true,
+   publishedAt: '2026-07-15T00:00:00Z',
+-  releaseUrl: `https://github.com/opensquilla/opensquilla/releases/tag/${tag}`,
++  releaseUrl: `https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/${tag}`,
+   sha256sums: 'SHA256SUMS',
+   platforms: {
+-    'darwin-arm64': {
++    'darwin-x64': {
+       feed: 'latest-mac.yml',
+-      archive: `OpenSquilla-${version}-mac-arm64.zip`,
+-      installer: `OpenSquilla-${version}-mac-arm64.dmg`,
+-    },
+-    'win32-x64': {
+-      feed: 'latest.yml',
+-      installer: `OpenSquilla-${version}-win-x64.exe`,
++      archive: `OpenSquilla-${version}-mac-x64.zip`,
++      installer: `OpenSquilla-${version}-mac-x64.dmg`,
+     },
+   },
+ })
+diff --git a/desktop/electron/scripts/test-update-resolver.mjs b/desktop/electron/scripts/test-update-resolver.mjs
+index bfda09b41..2896d4bf3 100644
+--- a/desktop/electron/scripts/test-update-resolver.mjs
++++ b/desktop/electron/scripts/test-update-resolver.mjs
+@@ -42,17 +42,13 @@ const channelManifest = (tag, version, prerelease = true) => ({
+   baseVersion: version.replace(/-rc\d+$/, ''),
+   prerelease,
+   publishedAt: '2026-07-15T00:00:00Z',
+-  releaseUrl: `https://github.com/opensquilla/opensquilla/releases/tag/${tag}`,
++  releaseUrl: `https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/${tag}`,
+   sha256sums: 'SHA256SUMS',
+   platforms: {
+-    'darwin-arm64': {
++    'darwin-x64': {
+       feed: 'latest-mac.yml',
+-      archive: `OpenSquilla-${version}-mac-arm64.zip`,
+-      installer: `OpenSquilla-${version}-mac-arm64.dmg`,
+-    },
+-    'win32-x64': {
+-      feed: 'latest.yml',
+-      installer: `OpenSquilla-${version}-win-x64.exe`,
++      archive: `OpenSquilla-${version}-mac-x64.zip`,
++      installer: `OpenSquilla-${version}-mac-x64.dmg`,
+     },
+   },
+ })
+@@ -64,7 +60,7 @@ assert.equal(updateChannelPathForVersion('not-a-version'), null)
+ {
+   const manifest = channelManifest('v0.5.0rc5', '0.5.0-rc5')
+   assert.equal(validateUpdateChannelManifest(manifest).tag, 'v0.5.0rc5')
+-  const mac = candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64')
++  const mac = candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-x64')
+   assert.ok(mac)
+   assert.equal(mac.version, '0.5.0-rc5')
+   assert.equal(
+@@ -73,17 +69,15 @@ assert.equal(updateChannelPathForVersion('not-a-version'), null)
+   )
+   assert.equal(
+     updateAssetUrl(mac, 'github'),
+-    'https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc5/OpenSquilla-0.5.0-rc5-mac-arm64.dmg',
++    'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download/v0.5.0rc5/OpenSquilla-0.5.0-rc5-mac-x64.dmg',
+   )
+-  const win = candidateFromUpdateChannel('0.5.0-rc4', manifest, 'win32-x64')
+-  assert.equal(win?.installer, 'OpenSquilla-0.5.0-rc5-win-x64.exe')
+ }
+ 
+ assert.equal(
+   candidateFromUpdateChannel(
+     '0.5.0-rc5',
+     channelManifest('v0.5.0rc4', '0.5.0-rc4'),
+-    'darwin-arm64',
++    'darwin-x64',
+   ),
+   null,
+ )
+@@ -91,7 +85,7 @@ assert.equal(
+   candidateFromUpdateChannel(
+     '0.5.0-rc4',
+     channelManifest('v0.5.0', '0.5.0', false),
+-    'darwin-arm64',
++    'darwin-x64',
+   )?.version,
+   '0.5.0',
+ )
+@@ -99,7 +93,7 @@ assert.equal(
+   candidateFromUpdateChannel(
+     '0.5.0-rc4',
+     channelManifest('v0.6.0rc1', '0.6.0-rc1'),
+-    'darwin-arm64',
++    'darwin-x64',
+   ),
+   null,
+ )
+@@ -149,25 +143,25 @@ assert.throws(
+   () => validateUpdateChannelManifest({
+     ...channelManifest('v0.5.0rc5', '0.5.0-rc5'),
+     tag: 'v0.5.0-rc.5',
+-    releaseUrl: 'https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0-rc.5',
++    releaseUrl: 'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag/v0.5.0-rc.5',
+   }),
+   /canonical/,
+ )
+ {
+   const manifest = channelManifest('v0.5.0rc5', '0.5.0-rc5')
+-  manifest.platforms['win32-x64'].installer = 'OpenSquilla-0.5.0-rc4-win-x64.exe'
++  manifest.platforms['darwin-x64'].installer = 'OpenSquilla-0.5.0-rc4-mac-x64.dmg'
+   assert.throws(() => validateUpdateChannelManifest(manifest), /platform assets/)
+ }
+ {
+   const manifest = channelManifest('v0.5.0rc5', '0.5.0-rc5')
+-  manifest.platforms['darwin-arm64'].feed = 'custom.yml'
++  manifest.platforms['darwin-x64'].feed = 'custom.yml'
+   assert.throws(() => validateUpdateChannelManifest(manifest), /platform assets/)
+ }
+ 
+ // Windows mirror downloads are trusted only after their bytes match the exact
+ // asset entry in the canonical GitHub Release SHA256SUMS file.
+ {
+-  const asset = 'OpenSquilla-0.5.0-rc5-win-x64.exe'
++  const asset = 'OpenSquilla-0.5.0-rc5-mac-x64.dmg'
+   const bytes = Buffer.from('verified windows installer bytes')
+   const expected = createHash('sha256').update(bytes).digest('hex')
+   const sums = `${'a'.repeat(64)}  another-asset.zip\n${expected.toUpperCase()} *${asset}\n`
+@@ -238,7 +232,7 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
+   assert.ok(c, 'rc1 should find rc2')
+   assert.equal(c.tag, 'v0.5.0rc2')
+   assert.equal(c.version, '0.5.0-rc2')
+-  assert.equal(c.feedUrl, 'https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc2')
++  assert.equal(c.feedUrl, 'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download/v0.5.0rc2')
+ }
+ 
+ // 2. A resolver-enabled client on 0.5.0-rc2 sees v0.5.0rc3.
+@@ -340,10 +334,8 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
+ const releaseAssets = (version) => [
+   { name: 'SHA256SUMS' },
+   { name: 'latest-mac.yml' },
+-  { name: 'latest.yml' },
+-  { name: `OpenSquilla-${version}-mac-arm64.zip` },
+-  { name: `OpenSquilla-${version}-mac-arm64.dmg` },
+-  { name: `OpenSquilla-${version}-win-x64.exe` },
++  { name: `OpenSquilla-${version}-mac-x64.zip` },
++  { name: `OpenSquilla-${version}-mac-x64.dmg` },
+ ]
+ const inventoryRelease = (tag, version, overrides = {}) => ({
+   tag_name: tag,
+@@ -369,11 +361,11 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
+   assert.equal(manifest.prerelease, false)
+   // The synthesized manifest satisfies the exact same contract as a mirrored one.
+   assert.deepEqual(validateUpdateChannelManifest(manifest), manifest)
+-  const candidate = candidateFromUpdateChannel('0.5.0', manifest, 'win32-x64')
+-  assert.equal(candidate?.installer, 'OpenSquilla-0.5.1-win-x64.exe')
++  const candidate = candidateFromUpdateChannel('0.5.0', manifest, 'darwin-x64')
++  assert.equal(candidate?.installer, 'OpenSquilla-0.5.1-mac-x64.dmg')
+   assert.equal(
+     updateAssetUrl(candidate, 'github'),
+-    'https://github.com/opensquilla/opensquilla/releases/download/v0.5.1/OpenSquilla-0.5.1-win-x64.exe',
++    'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download/v0.5.1/OpenSquilla-0.5.1-mac-x64.dmg',
+   )
+ }
+ 
+@@ -382,7 +374,7 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
+ {
+   const incomplete = inventoryRelease('v0.5.2', '0.5.2')
+   incomplete.assets = incomplete.assets.filter(
+-    (asset) => asset.name !== 'OpenSquilla-0.5.2-win-x64.exe',
++    (asset) => asset.name !== 'OpenSquilla-0.5.2-mac-x64.dmg',
+   )
+   const manifest = updateChannelManifestFromReleaseInventory('0.5.0', [
+     incomplete,
+@@ -400,7 +392,7 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
+     inventoryRelease('v0.5.0rc4', '0.5.0-rc4'),
+   ])
+   assert.equal(manifest?.tag, 'v0.5.0rc5')
+-  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64')?.version, '0.5.0-rc5')
++  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-x64')?.version, '0.5.0-rc5')
+ }
+ {
+   const manifest = updateChannelManifestFromReleaseInventory('0.5.0-rc4', [
+@@ -418,7 +410,7 @@ const inventoryRelease = (tag, version, overrides = {}) => ({
+     inventoryRelease('v0.5.0rc4', '0.5.0-rc4'),
+   ])
+   assert.equal(manifest?.tag, 'v0.5.0rc4')
+-  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64'), null)
++  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-x64'), null)
+ }
+ 
+ // Non-canonical tag spellings and disagreeing prerelease flags do not
+diff --git a/desktop/electron/src/main.ts b/desktop/electron/src/main.ts
+index c4f4133fb..b0c6e26eb 100644
+--- a/desktop/electron/src/main.ts
++++ b/desktop/electron/src/main.ts
+@@ -9283,8 +9283,10 @@ interface ResolvedDesktopUpdate {
+ }
+ 
+ function desktopUpdatePlatform(): DesktopUpdatePlatform | null {
+-  if (process.platform === 'darwin' && process.arch === 'arm64') return 'darwin-arm64'
+-  if (process.platform === 'win32' && process.arch === 'x64') return 'win32-x64'
++  // This downstream fork builds macOS Intel only: the channel manifest carries
++  // a single darwin-x64 platform entry and GitHub discovery/downloads point at
++  // the fork's releases, which ship only mac-x64 assets.
++  if (process.platform === 'darwin' && process.arch === 'x64') return 'darwin-x64'
+   return null
+ }
+ 
+diff --git a/desktop/electron/src/update-channel.ts b/desktop/electron/src/update-channel.ts
+index 44c1063ca..41d2ae8a4 100644
+--- a/desktop/electron/src/update-channel.ts
++++ b/desktop/electron/src/update-channel.ts
+@@ -3,13 +3,16 @@ import { parseOpenSquillaReleaseTag, type ParsedReleaseTag } from './update-feed
+ export const UPDATE_OSS_RELEASE_ROOT =
+   'https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases'
+ export const UPDATE_GITHUB_RELEASE_ROOT =
+-  'https://github.com/opensquilla/opensquilla/releases/download'
++  'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/download'
+ export const UPDATE_GITHUB_RELEASE_PAGE_ROOT =
+-  'https://github.com/opensquilla/opensquilla/releases/tag'
++  'https://github.com/MichaelGaoX/opensquilla-mac-intel/releases/tag'
+ export const UPDATE_GITHUB_RELEASES_API_URL =
+-  'https://api.github.com/repos/opensquilla/opensquilla/releases?per_page=100'
++  'https://api.github.com/repos/MichaelGaoX/opensquilla-mac-intel/releases?per_page=100'
+ 
+-export type DesktopUpdatePlatform = 'darwin-arm64' | 'win32-x64'
++// This downstream fork builds macOS Intel only: the update channel carries a
++// single darwin-x64 platform entry and GitHub discovery/downloads resolve to
++// the fork's own releases (which ship only mac-x64 assets).
++export type DesktopUpdatePlatform = 'darwin-x64'
+ export type DesktopUpdateSource = 'oss' | 'github'
+ 
+ export interface UpdateChannelPlatformEntry {
+@@ -133,10 +136,8 @@ function requiredReleaseAssets(version: ParsedReleaseTag): string[] {
+   return [
+     'SHA256SUMS',
+     'latest-mac.yml',
+-    'latest.yml',
+-    `OpenSquilla-${appVersion}-mac-arm64.zip`,
+-    `OpenSquilla-${appVersion}-mac-arm64.dmg`,
+-    `OpenSquilla-${appVersion}-win-x64.exe`,
++    `OpenSquilla-${appVersion}-mac-x64.zip`,
++    `OpenSquilla-${appVersion}-mac-x64.dmg`,
+   ]
+ }
+ 
+@@ -206,14 +207,10 @@ export function updateChannelManifestFromReleaseInventory(
+     releaseUrl: `${UPDATE_GITHUB_RELEASE_PAGE_ROOT}/${best.tag}`,
+     sha256sums: 'SHA256SUMS',
+     platforms: {
+-      'darwin-arm64': {
++      'darwin-x64': {
+         feed: 'latest-mac.yml',
+-        archive: `OpenSquilla-${version}-mac-arm64.zip`,
+-        installer: `OpenSquilla-${version}-mac-arm64.dmg`,
+-      },
+-      'win32-x64': {
+-        feed: 'latest.yml',
+-        installer: `OpenSquilla-${version}-win-x64.exe`,
++        archive: `OpenSquilla-${version}-mac-x64.zip`,
++        installer: `OpenSquilla-${version}-mac-x64.dmg`,
+       },
+     },
+   })
+@@ -256,7 +253,7 @@ export function validateUpdateChannelManifest(payload: unknown): UpdateChannelMa
+   }
+   const platforms = raw.platforms as Record<string, unknown>
+   const parsedPlatforms = {} as Record<DesktopUpdatePlatform, UpdateChannelPlatformEntry>
+-  for (const platform of ['darwin-arm64', 'win32-x64'] as const) {
++  for (const platform of ['darwin-x64'] as const) {
+     const entry = platforms[platform]
+     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+       return invalid(`channel manifest is missing ${platform}`)
+@@ -272,15 +269,12 @@ export function validateUpdateChannelManifest(payload: unknown): UpdateChannelMa
+   }
+ 
+ 
+-  const expectedMacArchive = `OpenSquilla-${version}-mac-arm64.zip`
+-  const expectedMacInstaller = `OpenSquilla-${version}-mac-arm64.dmg`
+-  const expectedWindowsInstaller = `OpenSquilla-${version}-win-x64.exe`
++  const expectedMacX64Archive = `OpenSquilla-${version}-mac-x64.zip`
++  const expectedMacX64Installer = `OpenSquilla-${version}-mac-x64.dmg`
+   if (
+-    parsedPlatforms['darwin-arm64'].feed !== 'latest-mac.yml'
+-    || parsedPlatforms['darwin-arm64'].archive !== expectedMacArchive
+-    || parsedPlatforms['darwin-arm64'].installer !== expectedMacInstaller
+-    || parsedPlatforms['win32-x64'].feed !== 'latest.yml'
+-    || parsedPlatforms['win32-x64'].installer !== expectedWindowsInstaller
++    parsedPlatforms['darwin-x64'].feed !== 'latest-mac.yml'
++    || parsedPlatforms['darwin-x64'].archive !== expectedMacX64Archive
++    || parsedPlatforms['darwin-x64'].installer !== expectedMacX64Installer
+   ) {
+     return invalid('channel manifest platform assets do not match the release version')
+   }
+diff --git a/desktop/electron/src/update-feed-resolver.ts b/desktop/electron/src/update-feed-resolver.ts
+index 5a55f3403..b552cbba6 100644
+--- a/desktop/electron/src/update-feed-resolver.ts
++++ b/desktop/electron/src/update-feed-resolver.ts
+@@ -9,8 +9,10 @@
+ // channels (rc1 vs rc2), so rc1 would never see rc2. This module resolves the
+ // correct candidate release ourselves; a generic feed is then pointed at it.
+ 
+-export const GITHUB_UPDATE_OWNER = 'opensquilla'
+-export const GITHUB_UPDATE_REPO = 'opensquilla'
++// The downstream fork hosts the macOS Intel builds, so the GitHub prerelease
++// resolution must look at the fork's releases rather than upstream's.
++export const GITHUB_UPDATE_OWNER = 'MichaelGaoX'
++export const GITHUB_UPDATE_REPO = 'opensquilla-mac-intel'
+ export const MAC_UPDATE_FEED_ASSET = 'latest-mac.yml'
+ 
+ export interface ParsedReleaseTag {
