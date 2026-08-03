@@ -30,4 +30,6 @@
   - `package.json`：repository / publish 指向本 fork
   - 同步更新 `test-update-resolver.mjs`、`test-packaged-update-banner.mjs` 断言
 
-> 注意：若上游改动这些文件导致补丁冲突，`sync-upstream.yml` 会报错并停止，需要手动更新本补丁。
+> 补丁基线：当前基于 `opensquilla/main`（含 #925 桌面更新校验和 OSS 优先改动）。
+> 若上游再改这些文件导致补丁冲突，`sync-upstream.yml` 会报错并停止，需要手动更新本补丁。
+> 更新方法：`git archive opensquilla/main | tar -x` 后在临时目录重做上述改动，`git diff` 重新生成。
