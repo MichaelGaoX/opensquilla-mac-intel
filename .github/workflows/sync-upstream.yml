@@ -100,6 +100,45 @@ jobs:
 
           echo "Patches applied for version $VERSION"
 
+      - name: Apply custom patches
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/patches
+          PATCHES_DIR="patches"
+
+          # Fetch list of .patch files from the downstream repo
+          gh api "repos/${{ github.repository }}/contents/${PATCHES_DIR}" \
+            --jq '.[] | select(.name | endswith(".patch")) | .name' \
+            > /tmp/patch-list.txt 2>/dev/null || echo "" > /tmp/patch-list.txt
+
+          if [ ! -s /tmp/patch-list.txt ]; then
+            echo "No custom patches found, skipping"
+            exit 0
+          fi
+
+          echo "Found custom patches:"
+          cat /tmp/patch-list.txt
+
+          while IFS= read -r patch_name; do
+            echo "Downloading: $patch_name"
+            gh api "repos/${{ github.repository }}/contents/${PATCHES_DIR}/${patch_name}" \
+              --jq '.content' | base64 -d > "/tmp/patches/${patch_name}"
+          done < /tmp/patch-list.txt
+
+          # Apply each patch
+          for patch_file in /tmp/patches/*.patch; do
+            echo "Applying: $(basename "$patch_file")"
+            if ! git apply --check "$patch_file" 2>/dev/null; then
+              echo "ERROR: Patch $(basename "$patch_file") does not apply cleanly."
+              echo "The upstream code has changed. Please update your custom patches."
+              exit 1
+            fi
+            git apply "$patch_file"
+            echo "Applied: $(basename "$patch_file")"
+          done
+
+          echo "Custom patches applied successfully"
+
       - name: Force push to downstream main
         env:
           DOWNSTREAM_REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
