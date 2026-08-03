@@ -62,6 +62,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Checkout upstream at tag
         uses: actions/checkout@v4
@@ -393,9 +394,11 @@ jobs:
           DOWNSTREAM_REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
           git remote add downstream "$DOWNSTREAM_REPO"
+          # [skip ci] prevents CI from running on this push
+          git commit --amend -m "$(git log -1 --pretty=%B) [skip ci]" --allow-empty
           git push --force downstream HEAD:main
 
-      - name: Create and push tag
+      - name: Push tag to downstream
         env:
           DOWNSTREAM_REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
@@ -404,3 +407,9 @@ jobs:
           git tag -a "$TAG" -m "OpenSquilla $VERSION macOS Intel"
           git push downstream "$TAG"
           echo "Pushed tag $TAG to downstream"
+
+      - name: Trigger Intel release build
+        run: |
+          gh workflow run "Release macOS Intel Assets" \
+            --repo "${{ github.repository }}" \
+            --field tag="${{ needs.sync.outputs.new_tag }}"

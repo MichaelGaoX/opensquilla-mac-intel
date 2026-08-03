@@ -1,7 +1,14 @@
-# OpenSquilla — Token-Efficient AI Agent
+# OpenSquilla — macOS Intel Build
 
 <p align="center">
   <img src="assets/opensquilla-long-logo.png" alt="OpenSquilla logo" width="500">
+</p>
+
+<p align="center">
+  <b>macOS Intel (x86_64) desktop builds</b> — synced from upstream.<br>
+  <a href="https://github.com/opensquilla/opensquilla">⬆️ Upstream: opensquilla/opensquilla</a> ·
+  <a href="https://github.com/opensquilla/opensquilla/compare/v0.5.2...MichaelGaoX:opensquilla-mac-intel:v0.5.2">🔍 Compare with upstream</a> ·
+  <a href="https://github.com/MichaelGaoX/opensquilla-mac-intel/releases">📦 Intel Releases</a>
 </p>
 
 <p align="center">
