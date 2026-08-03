@@ -2,9 +2,14 @@ name: Sync Upstream & Build Intel
 
 on:
   schedule:
-    # Every 3 hours
-    - cron: "0 */3 * * *"
+    # Every 30 minutes to quickly react to upstream releases
+    - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: check upstream and apply patches without pushing/tagging'
+        required: false
+        default: 'false'
 
 permissions:
   contents: write
@@ -63,6 +68,8 @@ jobs:
     permissions:
       contents: write
       actions: write
+    env:
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
     steps:
       - name: Checkout upstream at tag
         uses: actions/checkout@v4
@@ -84,6 +91,14 @@ jobs:
           sed -i.bak 's/"onnxruntime>=1.17,<=[^"]*"/"onnxruntime>=1.17,<=1.23.0"/' pyproject.toml
           rm -f pyproject.toml.bak
 
+          # 1a. Verify onnxruntime constraint was applied
+          if ! grep -qE 'onnxruntime>=1\.17,<=1\.23\.0' pyproject.toml; then
+            echo "ERROR: onnxruntime constraint not applied correctly"
+            cat pyproject.toml | grep -i onnxruntime || true
+            exit 1
+          fi
+          echo "Verified: onnxruntime <= 1.23.0 pinned"
+
           # 2. Set Python version to 3.12.12
           echo "3.12.12" > .python-version
 
@@ -91,14 +106,17 @@ jobs:
           gh api "repos/${{ github.repository }}/contents/.github/workflows/wheelhouse-release.yml" \
             --jq '.content' | base64 -d > .github/workflows/wheelhouse-release.yml
 
-          # 4. Update desktop/electron/package.json version if needed
-          # (version is already set from upstream, but verify npm ci works)
-          node -e "
-            const pkg = require('./desktop/electron/package.json');
-            console.log('Desktop package version:', pkg.version);
-          "
-
-          echo "Patches applied for version $VERSION"
+          # 3a. Verify wheelhouse-release.yml is Intel-only
+          if grep -qE 'build-desktop-macos-arm64|build-desktop-windows|runs-on: macos-13' .github/workflows/wheelhouse-release.yml; then
+            echo "ERROR: wheelhouse-release.yml still contains non-Intel targets"
+            grep -nE 'build-desktop-macos-arm64|build-desktop-windows|runs-on: macos-13' .github/workflows/wheelhouse-release.yml || true
+            exit 1
+          fi
+          if ! grep -q 'build-desktop-macos-intel' .github/workflows/wheelhouse-release.yml; then
+            echo "ERROR: wheelhouse-release.yml missing Intel build job"
+            exit 1
+          fi
+          echo "Verified: wheelhouse-release.yml is Intel-only"
 
       - name: Apply custom patches
         run: |
@@ -143,6 +161,10 @@ jobs:
         env:
           DOWNSTREAM_REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
+          if [ "${DRY_RUN}" == "true" ]; then
+            echo "Dry run: skipping push to downstream main"
+            exit 0
+          fi
           git remote add downstream "$DOWNSTREAM_REPO"
           # [skip ci] prevents CI from running on this push
           git commit --amend -m "$(git log -1 --pretty=%B) [skip ci]" --allow-empty
@@ -152,6 +174,10 @@ jobs:
         env:
           DOWNSTREAM_REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
+          if [ "${DRY_RUN}" == "true" ]; then
+            echo "Dry run: skipping tag push"
+            exit 0
+          fi
           TAG="${{ needs.sync.outputs.new_tag }}"
           VERSION="${TAG#v}"
           git tag -a "$TAG" -m "OpenSquilla $VERSION macOS Intel"
@@ -162,6 +188,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if [ "${DRY_RUN}" == "true" ]; then
+            echo "Dry run: skipping workflow trigger"
+            exit 0
+          fi
           gh workflow run "Release macOS Intel Assets" \
             --repo "${{ github.repository }}" \
             --field tag="${{ needs.sync.outputs.new_tag }}"
