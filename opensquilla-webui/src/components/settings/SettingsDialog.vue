@@ -111,6 +111,7 @@
               @update-llm-timeout="updateLlmTimeout"
               @update-context-window="updateContextWindow"
               @probe-connection="probeProviderConnection"
+              @refresh-models="refreshProviderModels"
               @save-provider="saveProvider"
               @cancel-provider-edit="cancelProviderEdit"
               @apply-preset="applyProviderPreset"
@@ -121,6 +122,7 @@
               @add-provider="requestAddProvider"
               @probe-configured-provider="probeConfiguredProvider"
               @activate-provider="activateProvider"
+              @update-image-generation-opt-in="setProviderImageGenerationOptIn"
             />
             <SetupBehaviorPanel
               v-else-if="section === 'behavior'"
@@ -160,6 +162,7 @@
               @update-field="updateCapabilityField"
               @search-provider-change="onSearchProviderChange"
               @image-provider-change="onImageProviderChange"
+              @use-image-recommendation="useImageRecommendation"
               @reset-capability="resetCapability"
             />
             <SettingsAppearancePanel v-else-if="section === 'appearance'" />
@@ -280,6 +283,7 @@ const {
   setAutoSessionTitles,
   setDisableNetworkObservability,
   setMemoryAutoCapture,
+  setProviderImageGenerationOptIn,
   setModelStrategy,
   setFixedProvider,
   setFixedModel,
@@ -300,6 +304,7 @@ const {
   updateLlmTimeout,
   updateContextWindow,
   probeProviderConnection,
+  refreshProviderModels,
   probeConfiguredProvider,
   activateProvider,
   removeProviderProfile,
@@ -308,6 +313,7 @@ const {
   onProviderChange,
   onSearchProviderChange,
   onImageProviderChange,
+  useImageRecommendation,
   saveProvider,
   resetCapability,
   copyCommand,

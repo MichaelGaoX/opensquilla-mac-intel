@@ -428,7 +428,6 @@ def test_primary_repair_ui_is_accessible_without_profile_choices() -> None:
         "chooseWorkspace",
         "browseWorkspace",
         "recoverTransaction",
-        "abandonCleanup",
         "revealProfile",
         "revealBackups",
         "copyDiagnostics",
@@ -444,12 +443,16 @@ def test_primary_repair_ui_is_accessible_without_profile_choices() -> None:
         "onRecoveryState",
         "chooseRecoveryWorkspace",
         "recoverProfileTransaction",
-        "abandonCleanupTransaction",
         "revealRecoveryPath",
         "copyRecoveryDiagnostics",
+        "openLatestDownloadPage",
     ):
         assert bridge_name in boot_html
     assert "abandonPartialCleanup" not in boot_html
+    # Interrupted cleanups are abandoned automatically during startup (the
+    # journal is archived, nothing further is deleted), so the boot page no
+    # longer carries a manual cleanup surface.
+    assert "abandonCleanup" not in boot_html
     for removed_name in (
         "recoveryProfiles",
         "copyCredential",
@@ -468,15 +471,15 @@ def test_primary_repair_ui_scaffold_has_all_six_locales() -> None:
     boot_html = _read("desktop/electron/src/boot.html")
     locale_keys = (
         "recoveryTitle",
+        "recoveryTitleLockBusy",
+        "recoveryTitleUpdate",
         "recoveryIntro",
+        "recoveryIntroUpdate",
+        "openDownloadPage",
         "workspaceLabel",
         "chooseWorkspace",
         "browseWorkspace",
         "recoverTransaction",
-        "cleanupRecoveryTitle",
-        "cleanupRecoveryIntro",
-        "abandonCleanup",
-        "abandonCleanupHelp",
         "revealProfile",
         "revealBackups",
         "copyDiagnostics",
@@ -489,6 +492,10 @@ def test_primary_repair_ui_scaffold_has_all_six_locales() -> None:
     for removed_key in (
         "recoveryConfirmationTitle",
         "recoveryConfirmationIntro",
+        "cleanupRecoveryTitle",
+        "cleanupRecoveryIntro",
+        "abandonCleanup",
+        "abandonCleanupHelp",
         "recoveryProfileUnsafeTitle",
         "recoveryProfileUnsafeIntro",
         "existingRecoveryLabel",
@@ -501,6 +508,61 @@ def test_primary_repair_ui_scaffold_has_all_six_locales() -> None:
         "returnPrimary",
     ):
         assert f"{removed_key}:" not in boot_html
+
+
+def test_primary_repair_ui_gives_actionable_copy_for_user_resolvable_blockers() -> None:
+    """The two blockers a user can act on directly drop the generic framing.
+
+    A profile held by another OpenSquilla process resolves by letting that
+    process finish (or quitting it); a config authored by a newer build
+    resolves by updating the app, so that state alone surfaces a download
+    entry pointing at the canonical releases page.
+    """
+
+    boot_html = _read("desktop/electron/src/boot.html")
+    main_ts = _read("desktop/electron/src/main.ts")
+    preload = _read("desktop/electron/src/preload.cts")
+    render_recovery = _section(
+        boot_html,
+        "function renderRecoveryState(state, moveFocus = true)",
+        "async function runRecoveryAction",
+    )
+
+    assert "const needsAppUpdate = stableCode === 'config_schema_too_new'" in render_recovery
+    assert "recoveryTitle.textContent = msg.recoveryTitleUpdate" in render_recovery
+    assert "recoveryIntro.textContent = msg.recoveryIntroUpdate" in render_recovery
+    assert "stableCode === 'profile_lock_busy'" in render_recovery
+    assert "recoveryTitle.textContent = msg.recoveryTitleLockBusy" in render_recovery
+    assert "recoveryIntro.textContent = msg.profileInUse" in render_recovery
+    assert "document.getElementById('updateGroup').hidden = !needsAppUpdate" in render_recovery
+
+    assert 'id="updateGroup"' in boot_html
+    assert 'id="recoveryUpdate"' in boot_html
+    assert "api.openLatestDownloadPage()" in boot_html
+
+    assert "ipcRenderer.invoke('desktop:recovery:open-download')" in preload
+    assert "ipcMain.handle('desktop:recovery:open-download'" in main_ts
+    open_download = _section(
+        main_ts,
+        "ipcMain.handle('desktop:recovery:open-download'",
+        "ipcMain.handle('desktop:boot:state'",
+    )
+    assert "trustedRecoveryIpc(event)" in open_download
+    assert (
+        "`https://github.com/${GITHUB_UPDATE_OWNER}/${GITHUB_UPDATE_REPO}/releases/latest`"
+        in open_download
+    )
+
+
+def test_mutating_recovery_commands_wait_briefly_for_a_busy_profile_writer() -> None:
+    """Startup passes a bounded --lock-timeout so a transient writer (an
+    exiting gateway, a finishing cron tick) resolves on its own instead of
+    stranding the user on the manual recovery page."""
+
+    main_ts = _read("desktop/electron/src/main.ts")
+
+    assert "const RECOVERY_LOCK_TIMEOUT_SECONDS = 5" in main_ts
+    assert main_ts.count("'--lock-timeout', String(RECOVERY_LOCK_TIMEOUT_SECONDS)") == 5
 
 
 def test_desktop_runtime_is_primary_only_with_safe_legacy_enumeration() -> None:
@@ -535,8 +597,10 @@ def test_desktop_runtime_is_primary_only_with_safe_legacy_enumeration() -> None:
     assert "desktop:recovery" in main_ts
     assert "desktop:recovery" in preload
     assert "onRecoveryState" in preload
-    assert "desktop:recovery:abandon-cleanup" in main_ts
-    assert "abandonCleanupTransaction" in preload
+    # Interrupted cleanups are auto-abandoned in the startup chain; there is
+    # no renderer-reachable manual abandon surface anymore.
+    assert "desktop:recovery:abandon-cleanup" not in main_ts
+    assert "abandonCleanupTransaction" not in preload
     assert "abandonPartialCleanup" not in preload
     assert "launchSafeProfile" not in preload
     assert "retryPrimaryProfile" not in preload
@@ -2373,7 +2437,8 @@ def test_desktop_dual_source_update_resolver_wires_static_channels() -> None:
     # Stable and same-base preview discovery uses a rate-limit-free static OSS
     # manifest. Versioned assets then use a strict OSS/GitHub generic feed with
     # runtime fallback; unsigned Windows verifies an exact versioned installer
-    # against the canonical GitHub checksum before revealing it.
+    # against the release SHA256SUMS (OSS mirror first, canonical GitHub
+    # Release as fail-over) before revealing it.
     main_ts = _read("desktop/electron/src/main.ts")
     resolver = _read("desktop/electron/src/update-channel.ts")
     verification = _read("desktop/electron/src/update-verification.ts")
@@ -2442,7 +2507,15 @@ def test_desktop_dual_source_update_resolver_wires_static_channels() -> None:
     assert "'install_failed'" in manual_download
     assert "manualInstall" in check
     assert "updateAssetUrl(resolved.candidate, resolved.source)" in check
-    assert "updateAssetUrl(candidate, 'github', 'SHA256SUMS')" in main_ts
+    assert "updateAssetUrl(candidate, source, 'SHA256SUMS')" in main_ts
+    assert (
+        "DESKTOP_UPDATE_CHECKSUM_SOURCES: readonly DesktopUpdateSource[] = ['oss', 'github']"
+        in main_ts
+    )
+    assert "const UPDATE_CHECKSUM_FETCH_ATTEMPTS = 3" in main_ts
+    assert "err.code === 'integrity_failed') throw err" in main_ts
+    assert "desktopLog('update_checksum_fetch_retry', {" in main_ts
+    assert "desktopLog('update_checksum_fetch_failed', {" in main_ts
     assert "await fetchCanonicalWindowsInstallerDigest(candidate)" in manual_download
     assert "await downloadVerifiedWindowsInstallerWithFallback(" in manual_download
     assert "alternateDesktopUpdateSource(chosen.source)" in verified_windows_download
@@ -2539,7 +2612,8 @@ def test_python_recovery_engine_replaces_typescript_layout_relocation() -> None:
         "ensureGatewayStarted()"
     )
     assert "inspection.allowed_actions.includes('reconcile')" in inspect
-    assert "'reconcile', '--home', active.home, '--json'" in inspect
+    assert "'reconcile', '--home', active.home," in inspect
+    assert "'--lock-timeout', String(RECOVERY_LOCK_TIMEOUT_SECONDS), '--json'," in inspect
     assert "inspection.outcome !== 'recovery_required'" in inspect
 
 
@@ -3145,3 +3219,43 @@ def test_blocked_consolidation_defers_only_after_primary_is_bootable() -> None:
     # severe blocking UI is considered.
     assert "inspection.allowed_actions.includes('recover-transaction')" in startup
     assert "'profile_transaction_auto_recovery_failed'" in startup
+
+    # An interrupted cleanup is abandoned automatically: the journal record is
+    # archived and every surviving file is preserved, so startup continues on
+    # the remaining profile without a manual confirmation.
+    assert "inspection.allowed_actions.includes('abandon-cleanup')" in startup
+    assert "inspection.stable_code === 'cleanup_transaction_incomplete'" in startup
+    assert "'cleanup_auto_abandon_failed'" in startup
+
+    # A corrupt config is repaired automatically from its newest valid backup
+    # (defaults otherwise) after the corrupt file is preserved beside itself.
+    assert "inspection.allowed_actions.includes('recover-config')" in startup
+    assert "'recover-config', '--home', active.home," in startup
+    assert "'--lock-timeout', String(RECOVERY_LOCK_TIMEOUT_SECONDS), '--json'," in startup
+    assert "'config_auto_recovery_failed'" in startup
+
+
+def test_recovery_protocol_detail_reaches_the_blocking_panel() -> None:
+    """The engine's sanitized diagnosis travels intact from CLI JSON to boot UI."""
+
+    main_ts = _read("desktop/electron/src/main.ts")
+    boot_html = _read("desktop/electron/src/boot.html")
+    parse = _section(
+        main_ts,
+        "function parseRecoveryProtocol",
+        "function parseDesktopProfileConsolidationProtocol",
+    )
+    render_recovery = _section(
+        boot_html,
+        "function renderRecoveryState(state, moveFocus = true)",
+        "async function runRecoveryAction",
+    )
+
+    assert "detail: string | null" in main_ts
+    # Older CLIs omit the key entirely; both absence and null render nothing.
+    assert "typeof record.detail === 'string' ? record.detail : null" in parse
+    assert "detail: null," in main_ts
+    assert 'id="recoveryDetail"' in boot_html
+    assert "typeof inspection.detail === 'string'" in render_recovery
+    assert "recoveryDetail.textContent = detail" in render_recovery
+    assert "recoveryDetail.hidden = !detail" in render_recovery

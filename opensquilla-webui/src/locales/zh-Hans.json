@@ -56,6 +56,7 @@
     "deleteHistoryFailed": "无法删除项目任务历史：{error}",
     "removeTitle": "移除这个项目？",
     "removeBody": "{name} 将从侧栏消失，但任务历史和文件都会保留。",
+    "removeBodyWithCronJobs": "{name} 将从侧栏消失。关联的 {count} 个定时任务会被暂停并保留，等待重新绑定或删除；任务历史和文件都会保留。",
     "removeConfirm": "移除项目",
     "removeFailed": "无法移除项目：{error}"
   },
@@ -690,6 +691,7 @@
       "removeConfirmTitle": "删除服务商？",
       "removeConfirmBody": "要从已配置服务商中删除 {provider} 吗？仍被路由引用的服务商无法删除。",
       "removeActiveConfirmBody": "要删除 {provider} 并将当前服务商切换为 {replacement} 吗？仍被路由引用的服务商无法删除。",
+      "removeConfirmImageCredentialImpact": "图像生成当前正在复用此服务商凭据。服务商、模型和启用状态会保留；删除后将改用同服务商的可用环境凭据，否则会变为待配置。",
       "removeConfirmPrimary": "删除服务商",
       "saveChanges": "保存更改",
       "verifyAndConnect": "验证并尝试连接",
@@ -714,6 +716,8 @@
         "stepReplaceAndPaste": "先点击下方「更换密钥」，再粘贴 API Key"
       },
       "recommendationScope": "OpenSquilla 推荐 · 可选",
+      "imageGenerationOptInLabel": "同时启用图像生成（推荐）",
+      "imageGenerationOptInDesc": "复用同一份 OpenRouter 凭据并启用推荐的图像模型；已有的自定义或已禁用图像设置不会被改动。",
       "advanced": "高级服务商选项",
       "providerOptions": "{provider} 端点与高级选项",
       "endpointTitle": "{provider} 端点",
@@ -822,7 +826,22 @@
       "modelListReadout": "可用 · {count}",
       "modelLiveSource": "实时",
       "modelMaxOutput": "最大输出 {tokens}",
+      "modelPublishedContext": "官网上下文 {tokens}",
+      "modelCatalogContext": "目录上下文 {tokens}",
+      "modelPublishedMaxOutput": "官网最大输出 {tokens}",
+      "modelCatalogMaxOutput": "目录最大输出 {tokens}",
+      "modelPublishedStatus": "状态 {status}",
+      "modelContextShort": "上下文",
+      "modelOutputShort": "输出",
+      "modelStatusTesting": "测试中",
+      "modelStatusOffline": "离线",
+      "modelCatalogValue": "目录值",
+      "refreshModels": "刷新模型",
+      "modelCatalogSynced": "模型元数据已同步 · {ago}",
+      "modelCatalogStaleSince": "正在使用 {ago} 同步的模型元数据",
+      "modelCatalogStale": "模型元数据可能已过期",
       "effectiveMaxTokens": "生效输出上限：{tokens} tokens · 来源：{source}",
+      "effectiveMaxTokensAfterSave": "保存后计算",
       "effectiveSourceConfig": "用户配置",
       "effectiveSourceCatalog": "模型目录",
       "effectiveSourceDefault": "内置默认值",
@@ -831,7 +850,8 @@
       "modelUseTyped": "使用 \"{value}\"",
       "modelNoMatches": "没有匹配的模型 — 可以直接使用输入的内容。",
       "modelListTruncated": "显示 {total} 个模型中的 {shown} 个 — 继续输入以缩小范围。",
-      "modelProvenance": "来自服务商的实时列表 · 详情来源：{sources}"
+      "modelProvenance": "服务商实时列表 · 能力来源：{sources}",
+      "modelMetadataProvenance": "服务商实时列表 · 官网参数优先，缺失时使用目录值"
     },
     "preset": {
       "summary": "路由模板：{label}",
@@ -1141,6 +1161,20 @@
       "memoryCustomDesc": "该嵌入服务通过 CLI 或 TOML 管理；可在此恢复为内置本地检索。",
       "imageModelSummary": "模型 ID",
       "imageModelHint": "从服务商的图像模型目录中选择，或直接输入其他受支持的模型 ID。",
+      "imageProviderSelectLabel": "图像生成服务商",
+      "imageProviderPlaceholder": "选择图像服务商",
+      "imageRecommendedGroup": "推荐",
+      "imageConfiguredProvidersGroup": "模型服务中已配置",
+      "imageOtherProvidersGroup": "其他服务商",
+      "imageEnabledTitle": "启用图像生成",
+      "imageEnabledHint": "关闭后保留服务商、模型和凭据引用，下次开启可继续使用。",
+      "imageRecommendedBadge": "推荐",
+      "imageRecommendationTitle": "推荐使用 {provider}",
+      "imageRecommendationDesc": "当前模型服务未提供图像设置时，可使用这个独立的图像生成服务。",
+      "imageRecommendationRegister": "注册并获取 API Key",
+      "imageRecommendationRegisterExternal": "注册并获取 API Key — {provider}（在新标签页中打开）",
+      "imageRecommendationUse": "使用 {provider}",
+      "imageRecommendationSelected": "已选择",
       "resetConfirmTitle": "重置“{capability}”？",
       "resetConfirmBody": "OpenSquilla 将移除此能力已保存的配置。系统环境变量和共享模型凭据不会改变。",
       "resetConfirmBodyWithDraft": "OpenSquilla 将移除此能力已保存的配置，并放弃其未保存的更改。系统环境变量和共享模型凭据不会改变。",
@@ -1429,7 +1463,7 @@
       "statusDisabled": "网络上报已关闭。",
       "statusDisabledByEnv": "网络上报已被环境变量设置关闭。",
       "disableNetworkObservabilityLabel": "关闭网络上报",
-      "disableNetworkObservabilityDesc": "停止安装遥测、后台更新检查，以及用于串联同一次会话请求的匿名标识——这些标识只会发送给官方 TokenRhythm API。你主动发起的模型请求不受影响。",
+      "disableNetworkObservabilityDesc": "停止安装与每日用量遥测、后台更新检查，以及仅发往官方 TokenRhythm HTTPS API 的会话级伪匿名标识和默认发送的可选跨会话 X-OpenSquilla-Install-Id 请求头。该持久化安装 ID 可能由本机 MAC/IP 派生，但绝不发送原始地址；CI/测试环境与旧遥测退出开关也会抑制它，单独关闭更新检查则不会。你主动发起的模型请求不受影响。",
       "memoryAutoCaptureLabel": "自动记忆",
       "memoryAutoCaptureDesc": "允许 OpenSquilla 将对话中有用的信息保存到长期记忆。",
       "save": "保存隐私设置"
@@ -1443,6 +1477,8 @@
       "providerProfileSaved": "已保存 {provider}，可用于路由。",
       "providerActiveRemoveNeedsReplacement": "请先添加并验证另一个服务商，再删除当前服务商。",
       "providerProfileRemoved": "已删除 {provider}。",
+      "providerProfileRemovedImageEnv": "已从模型服务删除 {provider}；图像生成继续通过 {envKey} 使用。",
+      "providerProfileRemovedImageNeedsCredential": "已删除 {provider}；图像生成保留了服务商和模型，但现在需要配置凭据。",
       "providerCredentialRemoved": "已删除 {provider} 的凭据。",
       "providerCredentialExternalStillActive": "已清除 OpenSquilla 中保存的 {provider} 凭据引用，但系统环境变量 {envKey} 仍在提供凭据。",
       "providerActivated": "已将 {provider} 设为当前使用。",
@@ -2350,6 +2386,13 @@
       "colKind": "类型",
       "colTarget": "目标",
       "colSchedule": "计划",
+      "colWorkspace": "项目空间",
+      "defaultWorkspace": "默认工作区",
+      "noWorkspace": "无项目空间",
+      "workspaceUnavailable": "{name}（不可用）",
+      "rebindWorkspace": "重新绑定",
+      "rebindBeforeRun": "请先重新绑定项目空间",
+      "retry": "重试",
       "colStatus": "状态",
       "colLastRun": "上次运行",
       "colNextRun": "下次运行",
@@ -2450,6 +2493,12 @@
       ,"moreRuntimeSettings": "更多运行设置（可选）"
       ,"advancedTimeHint": "仅在上面的时间选择无法满足需求时使用。"
       ,"timezoneSimpleHint": "通常无需修改。"
+      ,"projectWorkspace": "项目空间"
+      ,"defaultWorkspace": "使用默认工作区"
+      ,"noWorkspace": "无项目空间"
+      ,"workspaceUnavailable": "{name}（不可用）"
+      ,"workspaceRequiredHint": "请选择该任务要检查的项目。任务只会在所选项目中读取和处理文件。"
+      ,"workspaceOptionalHint": "可选。通用任务可选择“无项目空间”；需要读取项目文件时请选择对应项目。"
     },
     "form": {
       "cronPreviewPlaceholder": "输入 5 字段的 cron 表达式以预览",
@@ -2482,6 +2531,7 @@
         "agentTurn": "任务提示词"
       },
       "toastNameRequired": "名称为必填项",
+      "toastWorkspaceRequired": "请为该任务选择项目空间",
       "toastIntervalInvalid": "间隔必须为整数秒",
       "toastIsoTimeRequired": "ISO 时间为必填项",
       "toastCurrentSessionRequired": "当前会话 ID 为必填项",
@@ -2499,6 +2549,11 @@
       "toastRunFailed": "运行失败：{error}",
       "toastRunComplete": "运行完成：{reply}",
       "toastTriggered": "任务已触发",
+      "toastConnectionRecovered": "连接已恢复，任务状态已自动刷新",
+      "toastConnectionRetry": "连接尚未恢复，请稍后刷新页面",
+      "toastBackgroundComplete": "任务“{name}”已完成，可在运行历史中查看结果",
+      "toastBackgroundFailed": "任务“{name}”运行失败，请点击卡片上的重试按钮",
+      "unnamedTask": "未命名任务",
       "toastDeleted": "任务已删除",
       "running": "运行中",
       "awaitingUpdate": "等待更新",
@@ -3284,6 +3339,7 @@
     },
     "plan": {
       "label": "实施方案",
+      "process": "规划过程",
       "revision": "版本 {id}",
       "current": "当前版本",
       "superseded": "已有更新版本",
@@ -3351,6 +3407,10 @@
       "other": "其他",
       "otherPlaceholder": "输入其他答案",
       "dismiss": "忽略",
+      "planQuestionnaireHint": "请回答必填问题；如不再继续规划，请停止当前轮次。",
+      "answerPlanQuestionnaire": "请先回答上方的规划问题",
+      "previousQuestion": "上一个",
+      "nextQuestion": "下一个",
       "outcomeDoneTitle": "回复已发送 · 已恢复运行",
       "outcomeBusyDetail": "正在处理你的回复。",
       "outcomeDoneDetail": "智能体已接受此回复并继续。",

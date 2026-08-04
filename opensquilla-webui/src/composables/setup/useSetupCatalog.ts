@@ -4,6 +4,7 @@ import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabiliti
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import {
   hasEffectiveProvider,
+  normalizeCatalogSyncStatus,
   normalizeDiscoveredModels,
   normalizeProbeTimings,
   useSetupProviderForm,
@@ -182,6 +183,39 @@ interface OnboardingStatus {
   imageGenerationEnvKey?: string
   imageGenerationProvider?: string
   imageGenerationPrimary?: string
+  // Added by gateways that support atomic LLM/image onboarding. Its absence
+  // is the compatibility signal for legacy gateways: do not send the new
+  // mutation intent and do not invent a recommendation client-side.
+  imageGenerationState?: {
+    mode?: 'unconfigured' | 'disabled' | 'custom' | 'follow_llm' | string
+    operatorManaged?: boolean
+    storedEnabled?: boolean
+    effective?: {
+      enabled?: boolean
+      available?: boolean
+      dormant?: boolean
+      providerId?: string
+      primary?: string
+      credentialSource?: string
+      credentialOwner?: string
+      reason?: string
+    }
+    credentialOptions?: Array<{
+      providerId: string
+      available: boolean
+      source: string
+      owner: string
+      kind?: string
+      envKey?: string
+      reason?: string
+    }>
+    recommendation?: {
+      providerId?: string
+      reason?: string
+      canReuseCredential?: boolean
+      actionRequired?: boolean
+    } | null
+  }
   memoryEmbeddingConfigured?: boolean
   memoryEmbeddingSource?: string
   memoryEmbeddingEnvKey?: string
@@ -399,6 +433,10 @@ const providerActivation = ref<{
 let providerActivationRequestPending = false
 const providerCredentialRemovalPending = ref(false)
 const providerSelectionKind = ref<'primary' | 'profile' | 'new'>('primary')
+// This is an operation intent, not persisted image form state. It is reset for
+// each provider selection and only rendered for the one safe default case:
+// official OpenRouter onboarding while image generation is unconfigured.
+const providerImageGenerationOptIn = ref(true)
 // A configured primary model is shared with Model Routing, but edits made from
 // the provider dialog belong to its verify-then-save flow until the user
 // explicitly opens Model Routing.
@@ -412,7 +450,6 @@ const promotedForm = useSettingsPromotedForm()
 
 const tierModelCatalogs = ref<DiscoveredModelsByProvider>({})
 const tierModelDiscoveries = new Map<string, Promise<void>>()
-const tierModelDiscoveryCompleted = new Set<string>()
 let tierModelDiscoveryEpoch = 0
 type ImageModelCatalogSource = 'live' | 'catalog' | 'none'
 interface ImageModelCatalog {
@@ -450,7 +487,6 @@ function resetTierModelDiscovery() {
   tierModelDiscoveryEpoch += 1
   tierModelCatalogs.value = {}
   tierModelDiscoveries.clear()
-  tierModelDiscoveryCompleted.clear()
 }
 
 function resetImageModelDiscovery() {
@@ -561,7 +597,6 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
   if (provider === selectedProvider) {
     // Keep using the provider form's discovery state for the selected provider
     // so its live catalog feeds both Model Service and Model Routing.
-    if (providerForm.connection.value.models.length > 0) return Promise.resolve()
     // A selected stored profile has write-only credentials/endpoint state, so
     // the legacy form RPC cannot reconstruct its deployment. Resolve that
     // provider through the profile RPC just like non-selected routing members.
@@ -572,10 +607,8 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
 
   const existing = tierModelDiscoveries.get(provider)
   if (existing) return existing
-  if (tierModelDiscoveryCompleted.has(provider)) return Promise.resolve()
 
   const epoch = tierModelDiscoveryEpoch
-  tierModelDiscoveryCompleted.add(provider)
   const request = (async () => {
     try {
       // Deliberately provider-only. Never forward the selected provider's
@@ -584,8 +617,9 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
         ok?: boolean
         source?: string
         models?: unknown
+        catalog?: unknown
       }>('onboarding.llmProfile.models.discover', { providerId: provider })
-      let res: { ok?: boolean; source?: string; models?: unknown }
+      let res: { ok?: boolean; source?: string; models?: unknown; catalog?: unknown }
       if (provider === normalizeProviderId(config.value.llm?.provider)) {
         // The current provider lives in [llm], not llm_profiles. This branch
         // matters when Model Service is currently editing a different saved
@@ -595,6 +629,7 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
           ok?: boolean
           source?: string
           models?: unknown
+          catalog?: unknown
         }>('onboarding.models.discover', { providerId: provider })
       } else {
         try {
@@ -608,6 +643,7 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
             ok?: boolean
             source?: string
             models?: unknown
+            catalog?: unknown
           }>('onboarding.models.discover', { providerId: provider })
         }
       }
@@ -619,6 +655,7 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
           ? {
               models: normalizeDiscoveredModels(res.models),
               source,
+              catalog: normalizeCatalogSyncStatus(res.catalog),
             }
           : { models: [], source: 'none' },
       }
@@ -658,8 +695,16 @@ async function maybeDiscoverModelsForStrategy(): Promise<void> {
   await Promise.all(Array.from(providers, provider => discoverTierProviderModels(provider)))
 }
 
+function maybeDiscoverProviderModels(): Promise<void> {
+  if (section.value !== 'provider' || !loaded.value) return Promise.resolve()
+  return providerForm.discoverModels({
+    storedProfile: providerSelectionKind.value === 'profile',
+  })
+}
+
 watch(section, value => {
   if (value === 'modelStrategy') providerOwnsFixedModelDraft.value = false
+  void maybeDiscoverProviderModels()
   void maybeDiscoverModelsForStrategy()
   void maybeDiscoverImageGenerationModels()
 })
@@ -717,6 +762,7 @@ async function loadData(options: {
         runtimeProviders.value,
         primaryProviderIsConfigured(config.value.llm, status.value, effectiveConfig.value),
       )
+      providerImageGenerationOptIn.value = true
       modelStrategyForm.initFixedModel(config.value.llm?.model || '')
       providerOwnsFixedModelDraft.value = false
       providerFixedModelDraftSnapshot.value = null
@@ -944,6 +990,43 @@ const routingProviderOptions = computed(() => {
 const searchProviders = computed(() => (catalog.value.searchProviders || []).filter(p => p.runtimeSupported))
 const imageProviders = computed(() => (catalog.value.imageGenerationProviders || []).filter(p => p.runtimeSupported))
 const memoryProviders = computed(() => catalog.value.memoryEmbeddingProviders || [])
+const imageGenerationMode = computed(() => (
+  String(status.value.imageGenerationState?.mode || '').trim().toLowerCase()
+))
+const imageGenerationIntentSupported = computed(() => Boolean(status.value.imageGenerationState))
+const imageRecommendation = computed(() => {
+  const recommendation = status.value.imageGenerationState?.recommendation
+  const providerId = normalizeProviderId(recommendation?.providerId)
+  // The server owns recommendation policy. The client only renders a row that
+  // is present in the live image-provider catalog, so an older or customized
+  // catalog can never surface a phantom provider.
+  const provider = imageProviders.value.find(
+    candidate => normalizeProviderId(candidate.providerId) === providerId,
+  )
+  if (
+    !provider
+    || !providerId
+  ) return null
+  return {
+    providerId,
+    label: provider.label,
+    canReuseCredential: recommendation?.canReuseCredential === true,
+    actionRequired: recommendation?.actionRequired === true,
+    // The current gateway recommendation contract intentionally carries only
+    // provider identity and reason. Keep the acquisition URL scoped to the
+    // catalog-confirmed TokenRhythm row; future recommendations render without
+    // an incorrect registration destination until the contract adds one.
+    registrationUrl: providerId === 'tokenrhythm'
+      ? 'https://tokenrhythm.studio/register'
+      : '',
+  }
+})
+const imageCredentialOptions = computed(() => {
+  const catalogIds = new Set(imageProviders.value.map(provider => provider.providerId))
+  return (status.value.imageGenerationState?.credentialOptions || []).filter(
+    option => catalogIds.has(option.providerId),
+  )
+})
 const routerProfiles = computed(() => catalog.value.routerProfiles?.profiles || [])
 const currentRouterProfile = computed(() => {
   const providerId = normalizeProviderId(currentProvider.value)
@@ -996,6 +1079,25 @@ const providerEditorConfig = computed(() => {
     base_url: stored.base_url || '',
     proxy: stored.proxy || '',
   }
+})
+const providerImageGenerationOffer = computed(() => {
+  const spec = providerSpec.value
+  const baseUrlField = spec?.fields?.find(field => field.name === 'base_url')
+  const effectiveBaseUrl = baseUrlField
+    ? providerForm.fieldValue(baseUrlField, providerEditorConfig.value)
+    : String(spec?.defaultBaseUrl || '')
+  return Boolean(
+    imageGenerationIntentSupported.value
+    && imageGenerationMode.value === 'unconfigured'
+    // Profile upserts do not activate a provider and intentionally do not own
+    // image routing. The offer belongs only to the active/first-primary
+    // configure flow; stored-profile activation still receives the same
+    // default intent at the activation boundary.
+    && editingPrimaryProvider.value
+    && normalizeProviderId(providerForm.selectedProvider.value) === 'openrouter'
+    && spec
+    && sameEndpointApiBase(effectiveBaseUrl, spec.defaultBaseUrl),
+  )
 })
 const providerFields = computed(() => providerSpec.value?.fields || [])
 const providerCoreFields = computed(() => providerFields.value.filter(f => !isProviderCredentialField(f) && !isProviderAdvancedField(f)))
@@ -1051,6 +1153,25 @@ const effectiveMaxTokens = computed<EffectiveMaxTokens | null>(() => {
     value: Math.floor(value),
     source: source as EffectiveMaxTokens['source'],
   }
+})
+
+const effectiveMaxTokensPending = computed(() => {
+  const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
+  const selectedModel = currentFormModelValue()
+  if (!selectedProvider || !selectedModel) return false
+  if (selectedNewProfile.value) return true
+  if (selectedStoredProfile.value) return providerForm.isDirty.value
+
+  // Pending means that this provider/model is an unsaved candidate. Do not
+  // infer it from config.effective: older gateways may omit that optional RPC,
+  // which makes the effective value unknown rather than the saved form dirty.
+  const savedProvider = normalizeProviderId(config.value.llm?.provider)
+  const savedModel = String(config.value.llm?.model || '').trim()
+  return (
+    providerForm.isDirty.value
+    || selectedProvider !== savedProvider
+    || selectedModel !== savedModel
+  )
 })
 
 const providerSummary = computed(() => {
@@ -1235,7 +1356,9 @@ const memoryModeDescription = computed(() => {
 })
 const memoryExpandable = computed(() => capabilityResettable('memory_embedding'))
 
-const imageSpec = computed(() => imageProviders.value.find(p => p.providerId === capabilitiesForm.selectedImageProvider.value) || imageProviders.value[0] || null)
+const imageSpec = computed(() => imageProviders.value.find(
+  p => p.providerId === capabilitiesForm.selectedImageProvider.value,
+) || null)
 const imageModelCatalog = computed<ImageModelCatalog>(() => {
   const provider = normalizeProviderId(capabilitiesForm.selectedImageProvider.value)
   if (!provider) return { models: [], source: 'none' }
@@ -1551,6 +1674,7 @@ const providerFormPanel = providerForm.createPanel({
   contextWindowTokens: promotedForm.contextWindowTokens,
   contextWindowGlobal,
   effectiveMaxTokens,
+  effectiveMaxTokensPending,
   providerIsLocal,
   configuredProviders,
   editingPrimary: editingPrimaryProvider,
@@ -1594,6 +1718,8 @@ const providerPanel = computed(() => {
     credentialRemovalPending: providerCredentialRemovalPending.value,
     profileSaveSupported: profileSaveSupported.value,
     primaryProviderRemovalSupported: primaryProviderRemovalSupported.value,
+    imageGenerationOffer: providerImageGenerationOffer.value,
+    imageGenerationOptIn: providerImageGenerationOptIn.value,
   }
 })
 
@@ -1653,6 +1779,12 @@ watch(normalizedProvider, (provider) => {
     routerForm.setRouterMode('recommended')
   }
 })
+watch(
+  () => normalizeProviderId(providerForm.selectedProvider.value),
+  () => {
+    providerImageGenerationOptIn.value = true
+  },
+)
 const routerPanel = routerForm.createPanel({
   routerSummary,
   ensembleProfileActive,
@@ -1772,6 +1904,8 @@ const capabilitiesPanel = capabilitiesForm.createPanel({
   memoryProviders,
   imageProviders,
   imageSpec,
+  imageRecommendation,
+  imageCredentialOptions,
   imageModels: computed(() => imageModelCatalog.value.models),
   imageModelSource: computed(() => imageModelCatalog.value.source),
   searchRequiresKey,
@@ -2362,6 +2496,12 @@ async function activateProvider(value: string) {
       await rpc.call('onboarding.llmProfile.activate', {
         providerId,
         ...(routerAction ? { routerAction } : {}),
+        // Activating a stored profile is not controlled by the primary-provider
+        // editor switch. Ask the backend for the default; it still verifies the
+        // stored endpoint and preserves every operator-owned image route.
+        ...imageGenerationIntentPayload(providerId, {
+          respectProviderEditorChoice: false,
+        }),
       })
       await loadData()
       providerActivation.value = {
@@ -2394,6 +2534,11 @@ function setDisableNetworkObservability(enabled: boolean) {
 
 function setMemoryAutoCapture(enabled: boolean) {
   promotedForm.setMemoryAutoCapture(enabled)
+}
+
+function setProviderImageGenerationOptIn(enabled: boolean) {
+  if (!providerImageGenerationOffer.value) return
+  providerImageGenerationOptIn.value = enabled
 }
 
 function onProviderChange() {
@@ -2554,6 +2699,8 @@ async function removeProviderCredential() {
 async function probeProviderConnection() {
   if (providerInteractionLocked()) return
   if (!providerCredentialPanel.value?.probeReady) return
+  const storedProfileDraft = selectedStoredProfile.value && providerForm.isDirty.value
+  const persistedStoredProfile = selectedStoredProfile.value && !storedProfileDraft
   await providerForm.probeConnection({
     defaultModel: selectedStoredProfile.value
       ? providerProbeModel.value
@@ -2561,11 +2708,42 @@ async function probeProviderConnection() {
     modelOverride: editingPrimaryProvider.value && hasConfiguredPrimaryProvider.value
       ? currentFormModelValue()
       : undefined,
-    draftProfile: selectedStoredProfile.value,
+    storedProfile: persistedStoredProfile,
+    draftProfile: storedProfileDraft,
   })
   // Verification is deliberately non-mutating. The editor keeps the verified
   // draft visible so the user can review the discovered model and then commit
   // it with the explicit Save changes action.
+}
+
+async function refreshProviderModels() {
+  if (providerInteractionLocked()) return
+  const storedProfileDraft = selectedStoredProfile.value && providerForm.isDirty.value
+  await providerForm.discoverModels({
+    storedProfile: selectedStoredProfile.value && !storedProfileDraft,
+    draftProfile: storedProfileDraft,
+    forceRefresh: true,
+  })
+}
+
+function imageGenerationUsesProfileCredential(providerId: string): boolean {
+  const provider = normalizeProviderId(providerId)
+  const effective = status.value.imageGenerationState?.effective
+  return Boolean(
+    provider
+    && effective?.enabled === true
+    && normalizeProviderId(effective.providerId) === provider
+    && effective.credentialSource === 'llm_fallback'
+    && effective.credentialOwner === 'profile',
+  )
+}
+
+function imageGenerationEnvironmentKey(providerId: string): string {
+  const provider = normalizeProviderId(providerId)
+  const option = status.value.imageGenerationState?.credentialOptions?.find(
+    candidate => normalizeProviderId(candidate.providerId) === provider,
+  )
+  return String(option?.envKey || status.value.imageGenerationEnvKey || '').trim()
 }
 
 async function removeProviderProfile(providerId: string) {
@@ -2590,15 +2768,19 @@ async function removeProviderProfile(providerId: string) {
     pushToast(t('setup.toast.providerActiveRemoveNeedsReplacement'), { tone: 'danger' })
     return
   }
+  const imageUsedProfileCredential = imageGenerationUsesProfileCredential(provider)
   if (!(await confirmProviderDraftDiscard())) return
+  const baseConfirmationBody = row.active
+    ? t('setup.provider.removeActiveConfirmBody', {
+        provider: providerCatalogLabel(provider),
+        replacement: replacement?.label || '',
+      })
+    : t('setup.provider.removeConfirmBody', { provider: providerCatalogLabel(provider) })
   const ok = await confirm({
     title: t('setup.provider.removeConfirmTitle'),
-    body: row.active
-      ? t('setup.provider.removeActiveConfirmBody', {
-          provider: providerCatalogLabel(provider),
-          replacement: replacement?.label || '',
-        })
-      : t('setup.provider.removeConfirmBody', { provider: providerCatalogLabel(provider) }),
+    body: imageUsedProfileCredential
+      ? `${baseConfirmationBody} ${t('setup.provider.removeConfirmImageCredentialImpact')}`
+      : baseConfirmationBody,
     primaryLabel: t('setup.provider.removeConfirmPrimary'),
   })
   if (!ok) return
@@ -2607,12 +2789,38 @@ async function removeProviderProfile(providerId: string) {
       await rpc.call('onboarding.llmProfile.active.remove', {
         providerId: provider,
         replacementProviderId: replacement.providerId,
+        ...imageGenerationIntentPayload(replacement.providerId, {
+          respectProviderEditorChoice: false,
+        }),
       })
     } else {
       await rpc.call('onboarding.llmProfile.remove', { providerId: provider })
     }
-    pushToast(t('setup.toast.providerProfileRemoved', { provider: providerCatalogLabel(provider) }))
     await loadData()
+    const providerLabel = providerCatalogLabel(provider)
+    const effectiveImage = status.value.imageGenerationState?.effective
+    const imageRouteRetained = normalizeProviderId(effectiveImage?.providerId) === provider
+    if (
+      imageUsedProfileCredential
+      && imageRouteRetained
+      && effectiveImage?.available === true
+      && effectiveImage.credentialSource === 'env'
+    ) {
+      pushToast(t('setup.toast.providerProfileRemovedImageEnv', {
+        provider: providerLabel,
+        envKey: imageGenerationEnvironmentKey(provider),
+      }), { tone: 'warn' })
+    } else if (
+      imageUsedProfileCredential
+      && imageRouteRetained
+      && effectiveImage?.available !== true
+    ) {
+      pushToast(t('setup.toast.providerProfileRemovedImageNeedsCredential', {
+        provider: providerLabel,
+      }), { tone: 'warn' })
+    } else {
+      pushToast(t('setup.toast.providerProfileRemoved', { provider: providerLabel }))
+    }
   } catch (err) {
     pushToast(saveFailedMessage(err), { tone: 'danger' })
     // A transport failure can arrive after the gateway committed the atomic
@@ -2748,6 +2956,12 @@ function onImageProviderChange(providerId: string) {
     imageProviders.value.find(provider => provider.providerId === providerId),
   )
   void discoverImageGenerationModels(providerId)
+}
+
+function useImageRecommendation(providerId: string) {
+  const recommendation = imageRecommendation.value
+  if (!recommendation || normalizeProviderId(providerId) !== recommendation.providerId) return
+  onImageProviderChange(recommendation.providerId)
 }
 
 function updateCapabilityField(
@@ -2993,6 +3207,54 @@ function sameEndpointOrigin(candidateValue: unknown, storedValue: unknown): bool
   }
 }
 
+function sameEndpointApiBase(candidateValue: unknown, officialValue: unknown): boolean {
+  const official = String(officialValue || '').trim()
+  const candidate = String(candidateValue || '').trim() || official
+  if (!official || !candidate) return false
+  try {
+    const candidateUrl = new URL(candidate)
+    const officialUrl = new URL(official)
+    const normalizedPath = (value: URL) => value.pathname.replace(/\/+$/, '') || '/'
+    return candidateUrl.username === ''
+      && candidateUrl.password === ''
+      && officialUrl.username === ''
+      && officialUrl.password === ''
+      && candidateUrl.search === ''
+      && candidateUrl.hash === ''
+      && officialUrl.search === ''
+      && officialUrl.hash === ''
+      && candidateUrl.origin !== 'null'
+      && candidateUrl.origin === officialUrl.origin
+      && normalizedPath(candidateUrl) === normalizedPath(officialUrl)
+  } catch {
+    return false
+  }
+}
+
+function imageGenerationIntentPayload(
+  providerId: string,
+  options: { respectProviderEditorChoice?: boolean } = {},
+): Record<string, 'preserve' | 'enable_provider_default'> {
+  if (!imageGenerationIntentSupported.value) return {}
+  const normalizedProvider = normalizeProviderId(providerId)
+  const canEnableDefault = (
+    imageGenerationMode.value === 'unconfigured'
+    && normalizedProvider === 'openrouter'
+  )
+  const editorChoiceApplies = (
+    options.respectProviderEditorChoice !== false
+    && normalizedProvider === normalizeProviderId(providerForm.selectedProvider.value)
+  )
+  const optedIn = editorChoiceApplies ? providerImageGenerationOptIn.value : true
+  return {
+    imageGenerationIntent: canEnableDefault
+      && optedIn
+      && (!editorChoiceApplies || providerImageGenerationOffer.value)
+      ? 'enable_provider_default'
+      : 'preserve',
+  }
+}
+
 function providerConfigurePayload(includeProviderModelDraft = false): Record<string, unknown> {
   const payload = providerForm.payload()
   if (editingPrimaryProvider.value && hasConfiguredPrimaryProvider.value) {
@@ -3021,6 +3283,7 @@ function providerConfigurePayload(includeProviderModelDraft = false): Record<str
   ) {
     payload.preserveApiKey = true
   }
+  Object.assign(payload, imageGenerationIntentPayload(selectedProviderId))
   return payload
 }
 
@@ -3271,6 +3534,9 @@ async function saveModelStrategy(options: SaveOptions & {
           {
             providerId,
             model: modelStrategyForm.fixedModel.value.trim(),
+            ...imageGenerationIntentPayload(providerId, {
+              respectProviderEditorChoice: false,
+            }),
           },
         )
         restart = response?.restartRequired === true
@@ -3486,6 +3752,7 @@ async function copyConfigPath() {
     setAutoSessionTitles,
     setDisableNetworkObservability,
     setMemoryAutoCapture,
+    setProviderImageGenerationOptIn,
     setModelStrategy: modelStrategyForm.setStrategy,
     setFixedProvider,
     setFixedModel,
@@ -3512,6 +3779,7 @@ async function copyConfigPath() {
     updateLlmTimeout,
     updateContextWindow,
     probeProviderConnection,
+    refreshProviderModels,
     probeConfiguredProvider,
     activateProvider,
     removeProviderProfile,
@@ -3523,6 +3791,7 @@ async function copyConfigPath() {
     onSearchProviderChange,
     onMemoryProviderChange,
     onImageProviderChange,
+    useImageRecommendation,
     resetCapability,
     saveProvider,
     saveBehavior,
