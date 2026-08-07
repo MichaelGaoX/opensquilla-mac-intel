@@ -180,6 +180,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
+          npm run fetch:runtimes
           npm run build:gateway
           npm run build
           npx electron-builder --mac --x64 --publish never
