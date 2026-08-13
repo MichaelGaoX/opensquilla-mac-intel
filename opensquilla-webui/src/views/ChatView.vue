@@ -34,7 +34,6 @@
         v-if="!isNewChatLanding"
         ref="chatHeaderActionsRef"
         :title="currentChatTitle"
-        :session-key="sessionKey"
         :copy-state="sessionCopyState"
         :copy-icon="sessionCopyIcon"
         :copy-live-text="sessionCopyLiveText"
@@ -184,7 +183,7 @@
           :data-preview-session="forkTransition?.parentKey"
         >
         <ChatMessageList
-          :messages="forkTransition?.previewMessages || renderedMessages"
+          :messages="forkTransition?.previewMessages || visibleRenderedMessages"
           :session-key="forkTransition?.parentKey || sessionKey"
           :auth-token="readAuthToken()"
           :artifact-navigation-items="sessionArtifacts"
@@ -219,6 +218,7 @@
           @toggle-tool-group="toggleToolGroup"
           @toggle-tool-item="toggleToolItem"
           @show-tool-result="showToolResultModal"
+          @open-session="switchToSession"
           @resolve-interrupt="resolveInterrupt"
           @extend-interrupt="extendInterrupt"
           @clarify-submit="submitClarify"
@@ -277,16 +277,6 @@
           @implement-current="implementCurrentPlan"
           @implement-new="implementPlanInNewTask"
           @replan="beginPlanRevision"
-        />
-
-        <!-- Pre-reveal router phase: shown only before the live activity owns
-             the turn. Once activity is visible, execution status becomes
-             the single primary progress surface. -->
-        <RouterFxStrip
-          v-if="routerStripReserve"
-          class="router-fx-reserve"
-          :message="routerStripReserve"
-          aria-hidden="true"
         />
 
         <!-- MetaSkill run cards: preflight checkpoint + progress ribbon,
@@ -559,6 +549,9 @@
       @clear="clearPendingQueue"
       @edit="editPendingMessage"
       @remove="removePendingChip"
+      @reorder="reorderPendingItem"
+      @reorder-end="endPendingReorder"
+      @reorder-start="beginPendingReorder"
       @steer="steerPendingMessage"
     />
 
@@ -799,6 +792,7 @@ import { useChatAnswerReveal } from '@/composables/chat/useChatAnswerReveal'
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
 import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscriptions'
 import { useChatSend, type ChatSendOutcome } from '@/composables/chat/useChatSend'
+import { useChatSteerDelivery } from '@/composables/chat/useChatSteerDelivery'
 import {
   composerRunModeSelectionAction,
   effectiveComposerRunMode,
@@ -953,6 +947,9 @@ import {
   shouldCaptureFilePaste,
 } from '@/utils/chat/attachments'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
+import {
+  projectSessionCreationRouterPresentation,
+} from '@/utils/chat/sessionCreationRouterPresentation'
 import { agentIdFromSessionKey } from '@/utils/chat/sessionKeys'
 import { shouldDisableLandingSuggestions } from '@/utils/chat/landingSuggestions'
 import { handoffPlanQuestionnaireWheel } from '@/utils/chat/planQuestionnaireWheel'
@@ -1486,7 +1483,7 @@ const {
   enqueuePendingInput,
   enqueueRecoveredInput,
   enqueueHiddenControl,
-  enqueuePendingSteerRetry,
+  enqueuePendingSteerAttempt,
   removePendingChip,
   beginPendingDelivery,
   settlePendingDelivery,
@@ -1495,6 +1492,9 @@ const {
   adoptPendingQueue,
   popPendingTail,
   popAllPendingIntoComposer,
+  beginPendingReorder,
+  reorderPendingItem,
+  endPendingReorder,
   schedulePendingDrainAfterTerminal,
   flushDeferredPendingDrain,
   cleanup: cleanupPendingQueue,
@@ -1757,70 +1757,17 @@ const chatRenderedMessages = useChatRenderedMessages({
   isSubagentCompletionMessage,
   timeTranslator: t,
 })
-const { renderedMessages, routerDecisionCells } = chatRenderedMessages
+const { renderedMessages } = chatRenderedMessages
+const sessionCreationRouterPresentation = computed(() => (
+  projectSessionCreationRouterPresentation(renderedMessages.value, isStreaming.value)
+))
+const visibleRenderedMessages = computed(() => sessionCreationRouterPresentation.value.messages)
 
 function shouldRenderRouterStrip(_message: ChatRenderedMessage): boolean {
   // Always surface the router strip — the live ensemble strip is the primary
   // surface for the synthesizing process and no longer defers to activity.
   return true
 }
-
-/**
- * Pre-decision router-strip placeholder. It holds the strip's slot for the short
- * window before the first router_decision / ensemble_progress lands, so the live
- * ensemble strip appears from the very start of the turn rather than popping in.
- */
-const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
-  if (!isStreaming.value || !routerEnabled.value || !routerVisualEffectsEnabled.value) return null
-  const rendered = renderedMessages.value
-  const liveTurnKey = [...rendered]
-    .reverse()
-    .find(message => message.displayRole === 'user')
-    ?.turnKey
-  for (let i = rendered.length - 1; i >= 0; i--) {
-    const msg = rendered[i]
-    if (msg.isRouterStrip && (!liveTurnKey || msg.turnKey === liveTurnKey)) return null
-    if (msg.displayRole === 'user' && msg.turnKey !== liveTurnKey) break
-  }
-  if (modelRoutingMode.value === 'llm_ensemble') {
-    return {
-      id: 'router-strip-reserve',
-      role: 'router',
-      displayRole: 'router',
-      roleLabel: 'Router',
-      text: '',
-      timeStr: '',
-      showHeader: false,
-      isRouterStrip: true,
-      routerState: 'pending',
-      routerSource: 'llm_ensemble',
-      routerStatic: false,
-      routerPanel: 'llm-ensemble',
-      routerMode: 'llm_ensemble',
-      gridCells: [],
-      winnerIdx: -1,
-    }
-  }
-
-  const cells = routerDecisionCells({ tier: '', model: '' })
-  if (cells.length <= 1) return null
-  return {
-    id: 'router-strip-reserve',
-    role: 'router',
-    displayRole: 'router',
-    roleLabel: 'Router',
-    text: '',
-    timeStr: '',
-    showHeader: false,
-    isRouterStrip: true,
-    routerState: 'pending',
-    routerSource: 'none',
-    routerStatic: false,
-    routerPanel: routerVisualMode.value === 'legacy_grid' ? 'legacy-grid' : 'real-candidates',
-    gridCells: cells,
-    winnerIdx: -1,
-  }
-})
 
 const aiGeneratedLabel = computed(() => t('chat.aiGeneratedLabel'))
 
@@ -1858,6 +1805,19 @@ const {
   cleanup: cleanupHistory,
 } = chatHistory
 planMutationAccepted = () => scheduleHistorySync()
+
+const steerDelivery = useChatSteerDelivery({
+  messages,
+  pendingQueue,
+  checkpointForUserMessage: turnId => chatStream.checkpointForUserMessage?.(turnId),
+  scheduleHistorySync,
+  removePendingItem: item => settlePendingDelivery(item, 'accepted'),
+  restoreSteerIntoComposer: text => appendComposerText(text),
+  onProjected: () => {
+    autoScroll.value = true
+    scrollToBottom()
+  },
+})
 
 // The durable artifact index fills gaps left by the bounded/compacted message
 // history. History and the in-flight ArtifactEvent stream remain live fallback
@@ -2592,7 +2552,8 @@ const chatSend = useChatSend({
   enqueuePendingInput,
   enqueuePendingPayload,
   enqueueHiddenControl,
-  enqueuePendingSteerRetry,
+  enqueuePendingSteerAttempt,
+  steerDelivery,
   restoreSteerIntoComposer: text => appendComposerText(text),
   popAllPendingIntoComposer,
   executeSlashCommand,
@@ -2858,7 +2819,7 @@ dispatchQueuedItem = sendQueuedFollowup
 
 function takeVisiblePendingItem(index: number) {
   const item = pendingQueue.value[index]
-  if (!item || item.hiddenControl || item.deliveryState) return null
+  if (!item || item.hiddenControl || item.deliveryState || item.steerAttempt) return null
   pendingQueue.value.splice(index, 1)
   return item
 }
@@ -2873,10 +2834,22 @@ function editPendingMessage(index: number) {
   nextTick(() => composerRef.value?.focusTextarea())
 }
 
+const pendingSteerClicks = new WeakSet<ChatPendingItem>()
+
 async function steerPendingMessage(index: number) {
   const candidate = pendingQueue.value[index]
-  const item = beginPendingDelivery(index, candidate?.hiddenControl === true)
+  if (
+    candidate?.steerAttempt
+    && (
+      candidate.steerAttempt.phase === 'submitting'
+      || pendingSteerClicks.has(candidate)
+    )
+  ) return
+  const item = candidate?.steerAttempt
+    ? candidate
+    : beginPendingDelivery(index, candidate?.hiddenControl === true)
   if (!item) return
+  if (candidate?.steerAttempt) pendingSteerClicks.add(candidate)
 
   let outcome: ChatSendOutcome = 'retryable_failure'
   try {
@@ -2885,6 +2858,7 @@ async function steerPendingMessage(index: number) {
       : await sendQueuedSteer(item)
   } finally {
     settlePendingDelivery(item, outcome)
+    pendingSteerClicks.delete(item)
   }
 }
 
@@ -2931,6 +2905,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   aborted,
   messages,
   pendingQueue,
+  steerDelivery,
   usageAccum,
   usageModel,
   stream: chatStream,
@@ -3008,7 +2983,18 @@ const liveActivityProjection = computed(() =>
   }),
 )
 const liveActivityPhaseLabel = computed(() => {
-  if (streamActivityStale.value) return streamPhaseLabel.value
+  if (runStatus.value.status === 'queued' || streamActivityStale.value) {
+    return streamPhaseLabel.value
+  }
+  // Keep the slot-acquired boundary explicit until a real provider/router
+  // signal replaces it. Once that activity exists, use the established
+  // timeline projection (for example Working during a tool turn).
+  if (
+    !streamHasVisibleOutput.value
+    && streamPhaseLabel.value === String(t('chat.status.running'))
+  ) {
+    return streamPhaseLabel.value
+  }
   const currentStatus = [...liveActivityProjection.value.statusSteps]
     .reverse()
     .find(step => step.isCurrent)

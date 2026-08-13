@@ -96,6 +96,18 @@ _CollectResult = TypeVar("_CollectResult")
 _MISSING_GOAL_ACCEPTANCE = object()
 
 
+async def _complete_terminal_settlement[T](awaitable: Awaitable[T]) -> T:
+    """Finish accepted-input settlement even if the task is cancelled again."""
+
+    task = asyncio.ensure_future(awaitable)
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                return task.result()
+
+
 def _task_identity_payload(
     envelope: RouteEnvelope,
     task_id: str,
@@ -218,6 +230,9 @@ class TaskReservation:
     update_envelope_cache: bool = True
     activated: bool = False
     aborted: bool = False
+    queued_notification_pending: bool = False
+    activation_queue_depth: int | None = None
+    activation_queue_position: int | None = None
 
     @property
     def task_id(self) -> str:
@@ -230,6 +245,12 @@ class TaskReservation:
     @property
     def status(self) -> AgentTaskStatus:
         return self.task_record.status
+
+
+@dataclass(frozen=True)
+class _SteerPromotionResult:
+    task_id: str
+    deferred_notification: TaskReservation | None = None
 
 
 @dataclass(frozen=True)
@@ -388,7 +409,13 @@ class _RuntimeTask:
     accepted_config_captured: bool = False
     accepted_run_mode_override: Any | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
+    # Claimed synchronously before terminal persistence begins. This closes
+    # admission while accepted inputs and the public handoff are still settling.
+    terminal_settling: bool = False
+    # Set only after the public terminal event boundary completes successfully.
     terminal_emitted: bool = False
+    # Final idempotency fence, including observer-failure cleanup paths.
+    terminal_settled: bool = False
     cancel_requested: bool = False
     execution_started: bool = False
     guest_profile_cleaned: bool = False
@@ -409,10 +436,17 @@ class _RuntimeTask:
     # terminal transitions. It is intentionally per-task: a slow SQLite write
     # for one session must never hold the runtime-wide state lock.
     collect_claim: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
     # Serializes same-turn durable acceptance with cancellation and terminal
     # closure. The storage transaction is intentionally outside _state_lock,
     # while this per-task gate prevents a terminal path from overtaking it.
     steer_claim: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    @property
+    def terminal_closing(self) -> bool:
+        """Whether terminalization has been claimed or publicly completed."""
+
+        return self.terminal_settling or self.terminal_emitted or self.terminal_settled
 
     def capture_terminal_assistant_message(
         self,
@@ -892,7 +926,7 @@ class TaskRuntime:
         event_emitter: EventEmitter | None = None,
         terminal_listener: TerminalListener | None = None,
         lifecycle_listener: TaskLifecycleListener | None = None,
-        max_concurrency: int = 4,
+        max_concurrency: int = 8,
         max_pending_per_session: int | None = 64,
         subagent_reserved_slots: int = 0,
         turn_hard_deadline_s: float | None = None,
@@ -998,9 +1032,11 @@ class TaskRuntime:
         #
         # Design: true round-robin across sessions of the same agent_id.
         # ``_agent_session_rr[agent_id]`` is a deque of session_keys that have
-        # active (pending or running) tasks for that agent.  When a task needs a
-        # slot it must be at the front of its agent's deque; after acquiring the
-        # slot the deque entry rotates to the tail so the next session goes next.
+        # active (pending or running) tasks for that agent. ``_agent_slot_waiters``
+        # narrows that enrollment to sessions whose driver is genuinely waiting
+        # for a global slot; running sessions must never block idle capacity.
+        # After a waiter acquires, the RR deque rotates past that session so the
+        # next waiting session goes next.
         # When a session has no more pending/running tasks it is removed from the
         # deque in ``_mark_terminal``.
         #
@@ -1015,6 +1051,7 @@ class TaskRuntime:
         # Lazily initialised like _slot_cond.
         self._agent_session_rr: dict[str, deque[str]] = {}
         self._agent_active_sessions: dict[str, set[str]] = {}
+        self._agent_slot_waiters: dict[str, set[str]] = {}
         self._agent_in_flight: dict[str, int] = {}
         self._fair_cond: asyncio.Condition | None = None
 
@@ -1989,6 +2026,7 @@ class TaskRuntime:
         persisted_user_message_id: str | None = None,
         persisted_user_message_ids: list[str] | tuple[str, ...] | None = None,
         fresh_user_session: bool | None = None,
+        defer_queued_notification: bool = False,
     ) -> TaskHandle:
         """Idempotently activate a reservation after its DB transaction commits."""
 
@@ -2142,7 +2180,9 @@ class TaskRuntime:
             reservation.activated = True
             queue_depth = len(self._pending_by_session.get(session_key, []))
             queue_position = queue_depth
-            envelope = runtime_task.envelope
+            reservation.queued_notification_pending = True
+            reservation.activation_queue_depth = queue_depth
+            reservation.activation_queue_position = queue_position
 
         for target in interrupt_targets:
             asyncio_task = target.asyncio_task
@@ -2178,12 +2218,35 @@ class TaskRuntime:
             value=queue_depth,
             session_key=reservation.session_key,
         )
+        if not defer_queued_notification:
+            await self._publish_deferred_queued_activation(reservation)
+        return TaskHandle(
+            task_id=reservation.task_id,
+            session_key=reservation.session_key,
+            status=AgentTaskStatus.QUEUED,
+        )
+
+    async def _publish_deferred_queued_activation(
+        self,
+        reservation: TaskReservation,
+    ) -> None:
+        """Publish one already-registered task's queued boundary exactly once."""
+
+        if not reservation.activated or not reservation.queued_notification_pending:
+            return
+        # No await before claiming the notification: event-loop callers cannot
+        # race a second publisher past this exactly-once fence.
+        reservation.queued_notification_pending = False
+        queue_depth = reservation.activation_queue_depth
+        queue_position = reservation.activation_queue_position
+        runtime_task = reservation.runtime_task
+        envelope = runtime_task.envelope
         try:
             await self._emit_queued_activation(
                 envelope,
                 task_id=reservation.task_id,
-                queue_depth=queue_depth,
-                queue_position=queue_position,
+                queue_depth=max(1, int(queue_depth or 1)),
+                queue_position=max(1, int(queue_position or 1)),
                 run_kind=runtime_task.run_kind,
                 user_message_id=runtime_task.persisted_user_message_id,
             )
@@ -2194,11 +2257,6 @@ class TaskRuntime:
                 session_key=reservation.session_key,
                 exc_info=True,
             )
-        return TaskHandle(
-            task_id=reservation.task_id,
-            session_key=reservation.session_key,
-            status=AgentTaskStatus.QUEUED,
-        )
 
     async def status(self, task_id: str) -> AgentTaskRecord:
         fallback = self._terminal_fallback_records.get(task_id)
@@ -2229,7 +2287,7 @@ class TaskRuntime:
             task = self._running_by_session.get(session_key)
             if (
                 task is None
-                or task.terminal_emitted
+                or task.terminal_closing
                 or task.cancel_requested
                 or task.status is not AgentTaskStatus.RUNNING
             ):
@@ -2288,7 +2346,7 @@ class TaskRuntime:
                     "reason": "no_active_turn",
                 }
             if (
-                task.terminal_emitted
+                task.terminal_closing
                 or task.cancel_requested
                 or task.status is not AgentTaskStatus.RUNNING
             ):
@@ -2356,7 +2414,7 @@ class TaskRuntime:
                         },
                     )
                 if (
-                    task.terminal_emitted
+                    task.terminal_closing
                     or task.cancel_requested
                     or task.status is not AgentTaskStatus.RUNNING
                 ):
@@ -2427,7 +2485,7 @@ class TaskRuntime:
             task = self._running_by_session.get(session_key)
             same_turn = bool(
                 task is not None
-                and not task.terminal_emitted
+                and not task.terminal_closing
                 and not task.cancel_requested
                 and task.status is AgentTaskStatus.RUNNING
                 and self._steer_capability_for_task(task)["mode"] == "same_turn"
@@ -2440,7 +2498,7 @@ class TaskRuntime:
                 current = self._running_by_session.get(session_key)
                 eligible = not (
                     current is not task
-                    or task.terminal_emitted
+                    or task.terminal_closing
                     or task.cancel_requested
                     or task.status is not AgentTaskStatus.RUNNING
                     or self._steer_capability_for_task(task)["mode"] != "same_turn"
@@ -2559,7 +2617,7 @@ class TaskRuntime:
             task = self._running_by_session.get(session_key)
             if (
                 task is None
-                or task.terminal_emitted
+                or task.terminal_closing
                 or task.cancel_requested
                 or task.status is not AgentTaskStatus.RUNNING
             ):
@@ -2568,7 +2626,7 @@ class TaskRuntime:
             async with self._state_lock:
                 if (
                     self._running_by_session.get(session_key) is not task
-                    or task.terminal_emitted
+                    or task.terminal_closing
                     or task.cancel_requested
                     or task.status is not AgentTaskStatus.RUNNING
                 ):
@@ -2846,6 +2904,21 @@ class TaskRuntime:
             )
         if tasks:
             done, pending = await asyncio.wait(tasks, timeout=timeout)
+            if pending:
+                pending_drivers = set(pending)
+                async with self._state_lock:
+                    for runtime_task in self._tasks.values():
+                        if (
+                            runtime_task.asyncio_task in pending_drivers
+                            and not runtime_task.terminal_closing
+                        ):
+                            # The driver cancellation below is an implementation
+                            # detail of the expired shutdown wait. Preserve the
+                            # public ABANDONED contract regardless of whether its
+                            # CancelledError branch or the fallback marker wins.
+                            runtime_task.cancel_requested = True
+                            runtime_task.cancel_source = "gateway_shutdown_timeout"
+                            runtime_task.cancel_reason = "shutdown_timeout"
             for task in pending:
                 task.cancel()
             if pending:
@@ -2940,7 +3013,7 @@ class TaskRuntime:
             # acquire path may swallow the cancel via a race when the lock
             # holder releases at the same instant, so we always finalise
             # the record ourselves: _mark_terminal is idempotent (guarded
-            # by terminal_emitted) so a redundant call from the _execute
+            # by terminal_closing) so a redundant call from the _execute
             # cancel branch is a no-op.
             asyncio_task = victim.asyncio_task
             if asyncio_task is not None and not asyncio_task.done():
@@ -3420,22 +3493,34 @@ class TaskRuntime:
                         task,
                         AgentTaskStatus.SUCCEEDED,
                         terminal_reason="completed",
+                        promote_pending_steers=True,
                     )
-                    # Close the TaskRuntime acceptance window before reclaiming.
-                    # Otherwise a steer can land between reclaim_pending() and
-                    # _mark_terminal() and never reach either this turn or a
-                    # follow-up.
-                    undrained_steers = task.pending_input_provider.reclaim_pending()
-                    if undrained_steers:
-                        await self._promote_undrained_steers(task, undrained_steers)
                 finally:
                     if heartbeat_task is not None:
                         await self._stop_running_heartbeat(heartbeat_task)
                     if acquired:
                         await self._release_slot(task)
         except asyncio.CancelledError:
-            reason = "overflow_drop" if task.overflow_dropped else "interrupt"
-            terminal_reason = "dropped_by_overflow" if task.overflow_dropped else "cancelled"
+            shutdown_timed_out = task.cancel_source == "gateway_shutdown_timeout"
+            reason = (
+                "shutdown_timeout"
+                if shutdown_timed_out
+                else "overflow_drop"
+                if task.overflow_dropped
+                else "interrupt"
+            )
+            terminal_reason = (
+                "shutdown_timeout"
+                if shutdown_timed_out
+                else "dropped_by_overflow"
+                if task.overflow_dropped
+                else "cancelled"
+            )
+            terminal_status = (
+                AgentTaskStatus.ABANDONED
+                if shutdown_timed_out
+                else AgentTaskStatus.CANCELLED
+            )
             _emit_metric(
                 "turn_cancellations_total",
                 value=1,
@@ -3447,10 +3532,11 @@ class TaskRuntime:
             # land after reclaim_all() and remain permanently ``steering`` once
             # _mark_terminal() removes the task.
             async with self._state_lock:
-                if not task.terminal_emitted:
-                    task.status = AgentTaskStatus.CANCELLED
+                if not task.terminal_closing:
+                    task.status = terminal_status
             system_cancel_sources = {
                 "gateway_shutdown",
+                "gateway_shutdown_timeout",
                 "parent_session_kill",
                 "queue_interrupt",
                 "queue_overflow",
@@ -3470,17 +3556,12 @@ class TaskRuntime:
                 await self._record_drained_steers(task)
             await self._mark_terminal(
                 task,
-                AgentTaskStatus.CANCELLED,
+                terminal_status,
                 terminal_reason=terminal_reason,
+                promote_pending_steers=not explicit_user_stop,
+                activate_promoted_steers=task.cancel_source
+                not in {"gateway_shutdown", "gateway_shutdown_timeout"},
             )
-            if not explicit_user_stop:
-                pending = task.pending_input_provider.reclaim_pending()
-                if pending:
-                    await self._promote_undrained_steers(
-                        task,
-                        pending,
-                        activate=task.cancel_source != "gateway_shutdown",
-                    )
         except _TurnHardDeadlineExceeded as exc:
             _emit_metric(
                 "turn_cancellations_total",
@@ -3495,8 +3576,8 @@ class TaskRuntime:
                 terminal_reason="hard_deadline_exceeded",
                 error_class=type(exc).__name__,
                 error_message=str(exc),
+                promote_pending_steers=True,
             )
-            await self._promote_reclaimed_steers(task)
         except TimeoutError as exc:
             _emit_metric(
                 "turn_cancellations_total",
@@ -3511,8 +3592,8 @@ class TaskRuntime:
                 terminal_reason="timeout",
                 error_class=type(exc).__name__,
                 error_message=str(exc),
+                promote_pending_steers=True,
             )
-            await self._promote_reclaimed_steers(task)
         except Exception as exc:  # noqa: BLE001 - runtime ledger records the class.
             terminal_reason = str(getattr(exc, "terminal_reason", None) or "error")
             failure_kind = str(getattr(exc, "failure_kind", None) or "") or None
@@ -3527,8 +3608,8 @@ class TaskRuntime:
                 error_class=str(getattr(exc, "code", None) or type(exc).__name__),
                 error_message=str(exc),
                 failure_kind=failure_kind,
+                promote_pending_steers=True,
             )
-            await self._promote_reclaimed_steers(task)
         finally:
             self._user_input_broker.cancel_task(task.task_id)
             await self._settle_attached_plan_run(task)
@@ -3900,13 +3981,6 @@ class TaskRuntime:
                 exc_info=True,
             )
 
-    async def _promote_reclaimed_steers(self, task: _RuntimeTask) -> None:
-        """Preserve accepted input when a non-cancel terminal path wins a race."""
-
-        items = task.pending_input_provider.reclaim_pending()
-        if items:
-            await self._promote_undrained_steers(task, items)
-
     @staticmethod
     def _is_explicit_user_cancelled_task(task: AgentTaskRecord) -> bool:
         if task.status not in {
@@ -4260,11 +4334,12 @@ class TaskRuntime:
         items: Sequence[_SteeredInput],
         *,
         activate: bool = True,
-    ) -> None:
+        defer_queued_notification: bool = False,
+    ) -> _SteerPromotionResult | None:
         """Turn a too-late steer into one durable follow-up task."""
 
         if not items:
-            return
+            return None
         last = items[-1]
         message_ids = [
             item.persisted_user_message_id
@@ -4375,7 +4450,7 @@ class TaskRuntime:
                         completed_task_id=completed_task.task_id,
                         count=len(items),
                     )
-                    return
+                    return None
             else:
                 await self._storage.create_agent_task(reservation.task_record)
             promotion_committed = True
@@ -4393,7 +4468,8 @@ class TaskRuntime:
                     completed_task_id=completed_task.task_id,
                     promoted_task_id=promoted_task_id,
                 )
-                return
+                assert promoted_task_id is not None
+                return _SteerPromotionResult(task_id=promoted_task_id)
             failure_code = (
                 "STEER_PROMOTION_QUEUE_FULL"
                 if isinstance(exc, TaskQueueFullError)
@@ -4423,7 +4499,7 @@ class TaskRuntime:
                 count=len(items),
                 failure_code=failure_code,
             )
-            return
+            return None
 
         assert reservation is not None
         assert promoted_task_id is not None
@@ -4442,7 +4518,10 @@ class TaskRuntime:
         )
         if activate:
             try:
-                await self.activate(reservation)
+                await self.activate(
+                    reservation,
+                    defer_queued_notification=defer_queued_notification,
+                )
             except BaseException:
                 if not reservation.activated:
                     await self.abort_reservation(reservation)
@@ -4466,6 +4545,12 @@ class TaskRuntime:
             promoted_task_id=promoted_task_id,
             count=len(items),
             activated=activate,
+        )
+        return _SteerPromotionResult(
+            task_id=promoted_task_id,
+            deferred_notification=(
+                reservation if activate and defer_queued_notification else None
+            ),
         )
 
     async def _record_drained_steers(self, task: _RuntimeTask) -> None:
@@ -4683,25 +4768,21 @@ class TaskRuntime:
         return self._fair_cond
 
     async def _acquire_fair_slot(self, task: _RuntimeTask) -> None:
-        """Acquire one global concurrency slot with per-agent_id round-robin enrollment.
+        """Acquire one global slot with round-robin among genuine slot waiters.
 
         A task must satisfy one predicate before it is granted a slot:
 
         1. A slot is available: ``_global_in_flight < _max_concurrency``.
 
-        The per-agent RR deque is rotated on each acquire so that the *next*
-        task to grab a free slot comes from the next session in enrollment
-        order.  Crucially, the deque is NOT used as a blocking gate — it only
-        controls which session goes first when multiple sessions are competing
-        for the same slot.  This means sessions of the same agent with
-        different session_keys can all run concurrently when idle slots exist,
-        preventing head-session blocking.
+        The active-session RR deque supplies stable ordering, but eligibility is
+        filtered through ``_agent_slot_waiters``. Existing running sessions and
+        sessions whose next task is still behind its execution lock therefore
+        cannot become a phantom head that leaves global capacity idle.
 
         When only one slot is left (``_global_in_flight == _max_concurrency - 1``),
-        the session at the front of the agent's RR deque is preferred: other
-        sessions of the same agent yield so the deque head gets the last slot.
-        This preserves starvation-free round-robin ordering without blocking
-        concurrent execution when multiple slots are free.
+        the first *waiting* session in RR order is preferred. Other waiters for
+        the same agent yield so the last slot remains starvation-free without
+        being blocked by a session that is already running.
 
         When a slot is released ``_fair_cond.notify_all()`` wakes all waiters
         so they re-check the predicate.
@@ -4711,29 +4792,46 @@ class TaskRuntime:
         session_key = task.envelope.session_key
 
         async with cond:
-            while True:
-                # Predicate 1: global slot available.
-                if self._global_in_flight >= self._max_concurrency:
-                    await cond.wait()
-                    continue
-                # Tie-break: when exactly one slot remains and this agent has
-                # multiple active sessions, only the deque-head session may
-                # take it.  All other sessions of this agent yield so that RR
-                # ordering is preserved without wasting the slot.
-                idle_slots = self._max_concurrency - self._global_in_flight
-                rr = self._agent_session_rr.get(agent_id)
-                if idle_slots == 1 and rr and len(rr) > 1 and rr[0] != session_key:
-                    await cond.wait()
-                    continue
-                # Predicate satisfied — rotate deque and claim the slot.
-                if rr and rr[0] == session_key:
-                    rr.rotate(-1)
-                self._global_in_flight += 1
-                if task.run_kind == "subagent":
-                    self._subagent_in_flight += 1
-                self._agent_in_flight[agent_id] = self._agent_in_flight.get(agent_id, 0) + 1
-                task.acquired_slot = True
-                break
+            waiters = self._agent_slot_waiters.setdefault(agent_id, set())
+            waiters.add(session_key)
+            try:
+                while True:
+                    # Predicate 1: global slot available.
+                    if self._global_in_flight >= self._max_concurrency:
+                        await cond.wait()
+                        continue
+                    # Tie-break only among sessions that are actually inside
+                    # this global-slot wait. Active/running RR entries are not
+                    # eligible and cannot strand the last idle slot.
+                    idle_slots = self._max_concurrency - self._global_in_flight
+                    rr = self._agent_session_rr.get(agent_id)
+                    fair_session = next(
+                        (candidate for candidate in (rr or ()) if candidate in waiters),
+                        None,
+                    )
+                    if idle_slots == 1 and fair_session != session_key:
+                        await cond.wait()
+                        continue
+                    # Predicate satisfied — rotate past the granted session and
+                    # claim the slot. Rotation works even when non-waiting RR
+                    # entries precede this session.
+                    if rr and session_key in rr:
+                        rr.rotate(-(rr.index(session_key) + 1))
+                    self._global_in_flight += 1
+                    if task.run_kind == "subagent":
+                        self._subagent_in_flight += 1
+                    self._agent_in_flight[agent_id] = (
+                        self._agent_in_flight.get(agent_id, 0) + 1
+                    )
+                    task.acquired_slot = True
+                    break
+            finally:
+                waiters.discard(session_key)
+                if not waiters:
+                    self._agent_slot_waiters.pop(agent_id, None)
+                # Cancellation or a successful grant changes the genuine RR
+                # head. Wake peers even when no global slot count changed.
+                cond.notify_all()
 
         # Update storage and emit running metric outside the condition lock. A
         # collect claim can keep this await open; if cancellation or persistence
@@ -4823,7 +4921,7 @@ class TaskRuntime:
             await asyncio.sleep(interval)
             async with self._state_lock:
                 still_running = (
-                    not task.terminal_emitted
+                    not task.terminal_closing
                     and task.status == AgentTaskStatus.RUNNING
                     and self._running_by_session.get(task.envelope.session_key) is task
                 )
@@ -4853,7 +4951,7 @@ class TaskRuntime:
         await self._prepare_goal_context_for_activation(task)
         async with self._state_lock:
             if (
-                task.terminal_emitted
+                task.terminal_closing
                 or task.status in TERMINAL_STATUSES
                 or task.cancel_requested
             ):
@@ -4978,6 +5076,8 @@ class TaskRuntime:
         error_class: str | None = None,
         error_message: str | None = None,
         failure_kind: str | None = None,
+        promote_pending_steers: bool = False,
+        activate_promoted_steers: bool = True,
     ) -> None:
         """Finalize one task after collect and same-turn admissions settle."""
 
@@ -4991,6 +5091,8 @@ class TaskRuntime:
                         error_class=error_class,
                         error_message=error_message,
                         failure_kind=failure_kind,
+                        promote_pending_steers=promote_pending_steers,
+                        activate_promoted_steers=activate_promoted_steers,
                     )
         finally:
             # A driver cancelled before its first event-loop step never enters
@@ -5007,13 +5109,15 @@ class TaskRuntime:
         error_class: str | None = None,
         error_message: str | None = None,
         failure_kind: str | None = None,
+        promote_pending_steers: bool = False,
+        activate_promoted_steers: bool = True,
     ) -> None:
         record_primary_terminal_disposition = False
         collected_terminal_inputs: list[_CollectedPrimaryInput] = []
         async with self._state_lock:
-            if task.terminal_emitted:
+            if task.terminal_closing:
                 return
-            task.terminal_emitted = True
+            task.terminal_settling = True
             if task.primary_input_pending:
                 task.primary_input_pending = False
                 record_primary_terminal_disposition = True
@@ -5097,6 +5201,7 @@ class TaskRuntime:
                 error=str(exc),
             )
         terminal_persisted = True
+        promotion_result: _SteerPromotionResult | None = None
         try:
             try:
                 await self._storage.update_agent_task(
@@ -5117,6 +5222,23 @@ class TaskRuntime:
                     status=status,
                     terminal_update=terminal_update,
                 )
+            if terminal_persisted and promote_pending_steers:
+                # The terminal AgentTask row is now durable, but no public
+                # terminal/idle signal has escaped. Close every accepted steer
+                # under the same admission gate before observers can settle the
+                # old task. The promoted task is activated while the old turn
+                # still owns the per-session execution lock, so it can queue but
+                # cannot start early.
+                pending_steers = task.pending_input_provider.reclaim_pending()
+                if pending_steers:
+                    promotion_result = await _complete_terminal_settlement(
+                        self._promote_undrained_steers(
+                            task,
+                            pending_steers,
+                            activate=activate_promoted_steers,
+                            defer_queued_notification=activate_promoted_steers,
+                        )
+                    )
             payload: dict[str, Any] = {
                 "task_id": task.task_id,
                 "session_key": task.envelope.session_key,
@@ -5129,23 +5251,45 @@ class TaskRuntime:
             }
             if status != AgentTaskStatus.SUCCEEDED:
                 payload["terminal_message"] = build_terminal_reply(terminal_payload)
-            await self._emit(task.envelope.session_key, f"task.{status.value}", payload)
-            await self._notify_task_lifecycle(
-                TaskLifecycleEvent(
-                    phase="terminal",
-                    session_key=task.envelope.session_key,
-                    task_id=task.task_id,
-                    task_status=status,
-                    run_kind=task.run_kind,
-                    terminal_reason=terminal_reason,
-                    error_class=error_class,
-                    error_message=error_message,
-                    terminal_persisted=terminal_persisted,
+            await _complete_terminal_settlement(
+                self._emit(task.envelope.session_key, f"task.{status.value}", payload)
+            )
+            async with self._state_lock:
+                task.terminal_emitted = True
+            await _complete_terminal_settlement(
+                self._notify_task_lifecycle(
+                    TaskLifecycleEvent(
+                        phase="terminal",
+                        session_key=task.envelope.session_key,
+                        task_id=task.task_id,
+                        task_status=status,
+                        run_kind=task.run_kind,
+                        terminal_reason=terminal_reason,
+                        error_class=error_class,
+                        error_message=error_message,
+                        terminal_persisted=terminal_persisted,
+                        continuation_task_id=(
+                            promotion_result.task_id
+                            if promotion_result is not None
+                            else None
+                        ),
+                    )
                 )
             )
+            if (
+                promotion_result is not None
+                and promotion_result.deferred_notification is not None
+            ):
+                await _complete_terminal_settlement(
+                    self._publish_deferred_queued_activation(
+                        promotion_result.deferred_notification
+                    )
+                )
         finally:
             fairness_changed = False
             async with self._state_lock:
+                task.terminal_settling = False
+                task.terminal_settled = True
                 # Keep the session lane occupied through durable terminal
                 # persistence and ordered lifecycle settlement. In particular,
                 # a Goal idle hook must not admit its successor while the
@@ -5379,6 +5523,8 @@ class TaskRuntime:
                 task,
                 AgentTaskStatus.ABANDONED,
                 terminal_reason="shutdown_timeout",
+                promote_pending_steers=True,
+                activate_promoted_steers=False,
             )
 
     def _remove_pending(self, task: _RuntimeTask) -> None:

@@ -1823,23 +1823,59 @@ async def _resolve_session_node(storage: Any, key: str) -> Any:
     raise KeyError(f"Session not found: {key}")
 
 
+_SESSION_COUNT_VIEW = "session-count-v1"
+
+
 @_d.method("sessions.list", scope="operator.read")
 async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
     """List all sessions."""
     now_ms = int(time.time() * 1000)
+    request = params or {}
+    count_only = request.get("view") == _SESSION_COUNT_VIEW
+
+    def empty_payload() -> dict[str, Any]:
+        payload: dict[str, Any] = {"sessions": [], "count": 0, "ts": now_ms}
+        if count_only:
+            payload.update({"totalCount": 0, "total_count": 0})
+        return payload
 
     if ctx.session_manager is None:
-        return {"sessions": [], "count": 0, "ts": now_ms}
+        return empty_payload()
 
     storage = get_session_storage(ctx.session_manager)
     if storage is None:
-        return {"sessions": [], "count": 0, "ts": now_ms}
+        return empty_payload()
 
-    limit = (params or {}).get("limit", 50)
+    limit = request.get("limit", 50)
     from opensquilla.gateway.guest_rpc_policy import GuestRpcPolicy, guest_owns_session_key
 
-    if GuestRpcPolicy.is_guest(ctx):
-        owner_id = getattr(ctx.principal, "guest_owner_id", None)
+    is_guest = GuestRpcPolicy.is_guest(ctx)
+    owner_id = getattr(ctx.principal, "guest_owner_id", None) if is_guest else None
+    if count_only:
+        count_sessions = getattr(storage, "count_sessions", None)
+        if callable(count_sessions):
+            try:
+                total_count = (
+                    await count_sessions(guest_owner_id=owner_id)
+                    if is_guest
+                    else await count_sessions()
+                )
+            except TypeError:
+                # Older test doubles and alternative storage adapters may not
+                # implement the additive count contract. Fall through to the
+                # legacy list response so mixed-version clients still render.
+                pass
+            else:
+                total_count = max(0, int(total_count))
+                return {
+                    "sessions": [],
+                    "count": 0,
+                    "totalCount": total_count,
+                    "total_count": total_count,
+                    "ts": now_ms,
+                }
+
+    if is_guest:
         try:
             guest_limit = int(limit)
         except (TypeError, ValueError):
@@ -5152,6 +5188,24 @@ async def _handle_sessions_steer_v2(params: dict | None, ctx: RpcContext) -> dic
     if session is None:
         raise KeyError(f"Session not found: {key}")
 
+    def _project_workspace_failure(
+        exc: ProjectWorkspaceStateError,
+    ) -> RpcHandlerError:
+        mapped = map_project_workspace_error(
+            exc,
+            owner=ctx.principal.is_owner,
+        )
+        details = dict(mapped.details) if isinstance(mapped.details, dict) else {}
+        details["fallback_safe"] = True
+        return RpcHandlerError(
+            mapped.code,
+            mapped.message,
+            details=details,
+            retryable=mapped.retryable,
+            retry_after_ms=mapped.retry_after_ms,
+            accepted=False,
+        )
+
     task_runtime = getattr(ctx, "task_runtime", None)
     admit_steer = getattr(task_runtime, "admit_steer", None)
     if not callable(admit_steer):
@@ -5252,6 +5306,18 @@ async def _handle_sessions_steer_v2(params: dict | None, ctx: RpcContext) -> dic
                 storage=storage,
             )
 
+    workspace_guard = None
+    bound_workspace_id = getattr(session, "workspace_id", None)
+    if isinstance(bound_workspace_id, str) and bound_workspace_id:
+        try:
+            validated_workspace = await resolve_validated_project_workspace(
+                storage,
+                bound_workspace_id,
+            )
+        except ProjectWorkspaceStateError as exc:
+            raise _project_workspace_failure(exc) from exc
+        workspace_guard = validated_workspace.guard
+
     prepare_message = getattr(ctx.session_manager, "prepare_message", None)
     accept_turn = getattr(storage, "accept_turn", None)
     if not callable(prepare_message) or not callable(accept_turn):
@@ -5293,6 +5359,7 @@ async def _handle_sessions_steer_v2(params: dict | None, ctx: RpcContext) -> dic
                 request_session_key=ingress_identity.request_session_key,
                 client_request_id=ingress_identity.client_request_id,
                 request_fingerprint=ingress_identity.request_fingerprint,
+                workspace_guard=workspace_guard,
             ),
         )
 
@@ -5338,6 +5405,8 @@ async def _handle_sessions_steer_v2(params: dict | None, ctx: RpcContext) -> dic
             retryable=False,
             accepted=False,
         ) from exc
+    except ProjectWorkspaceStateError as exc:
+        raise _project_workspace_failure(exc) from exc
 
     if not admission.accepted:
         # A concurrent duplicate may have committed before this admission
@@ -6216,6 +6285,8 @@ _SESSION_DEPLOYMENT_PATCH_FIELDS = frozenset(
     }
 )
 
+_MAX_SESSION_DISPLAY_NAME_CHARS = 512
+
 
 @_d.method("sessions.patch", scope="operator.admin")
 async def _handle_sessions_patch(params: dict | None, ctx: RpcContext) -> dict:
@@ -6253,6 +6324,52 @@ async def _handle_sessions_patch(params: dict | None, ctx: RpcContext) -> dict:
         if keepalive_service is not None:
             keepalive_service.refresh_required(key, "session_deployment_changed")
     return result
+
+
+@_d.method("sessions.rename", scope="operator.write")
+async def _handle_sessions_rename(params: dict | None, ctx: RpcContext) -> dict:
+    """Rename one session without exposing admin-only deployment fields."""
+
+    key = _require_key(params)
+    assert isinstance(params, dict)
+    unexpected = sorted(set(params) - {"key", "displayName"})
+    if unexpected:
+        raise RpcHandlerError(
+            code="INVALID_PARAMS",
+            message="sessions.rename accepts only key and displayName.",
+            details={"unexpected_fields": unexpected},
+        )
+    display_name = params.get("displayName")
+    if not isinstance(display_name, str) or not display_name.strip():
+        raise RpcHandlerError(
+            code="INVALID_PARAMS",
+            message="displayName must be a non-empty string.",
+            details={"field": "displayName"},
+        )
+    normalized_display_name = display_name.strip()
+    if len(normalized_display_name) > _MAX_SESSION_DISPLAY_NAME_CHARS:
+        raise RpcHandlerError(
+            code="INVALID_PARAMS",
+            message=(
+                "displayName must be at most "
+                f"{_MAX_SESSION_DISPLAY_NAME_CHARS} characters."
+            ),
+            details={
+                "field": "displayName",
+                "maxLength": _MAX_SESSION_DISPLAY_NAME_CHARS,
+            },
+        )
+    if ctx.session_manager is None:
+        raise KeyError("No session manager available")
+    storage = get_session_storage(ctx.session_manager)
+    if storage is None:
+        raise KeyError("No session storage available")
+    return await _apply_sessions_patch(
+        {"key": key, "displayName": normalized_display_name},
+        ctx,
+        key=key,
+        storage=storage,
+    )
 
 
 @_d.method("sessions.reset", scope="operator.write")
