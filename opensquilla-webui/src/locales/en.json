@@ -1094,7 +1094,7 @@
       "capacityWarn": "{calls} model calls per turn — cost grows linearly and fusion gains taper past 4 proposers.",
       "capacityFull": "Limit of {max} proposers reached — more drafts stop improving fusion; remove one before adding another.",
       "diversityHint": "Several proposers share a model family — adding a different vendor usually improves fusion.",
-      "effectiveFacts": "Per turn: {calls} model calls · fuses once {quorum}/{proposers} proposers succeed · proposer timeout {proposerTimeout}s · aggregator timeout {aggregatorTimeout}s · {grace}s grace after quorum",
+      "effectiveFacts": "Per turn: {calls} model calls · fuses once {quorum}/{proposers} proposers succeed · proposer total timeout {proposerTimeout}s · aggregator idle timeout {aggregatorTimeout}s · {grace}s grace after quorum",
       "effectiveSummary": "{proposers} proposers in parallel + 1 aggregator · about {calls} model calls per turn",
       "runtimeStrategyTitle": "Runtime strategy",
       "runtimeStrategyDesc": "Success threshold, fallback, and time limits",
@@ -1103,7 +1103,7 @@
       "successThresholdExact": "At least {quorum} of {proposers} return normally",
       "failurePolicyLabel": "If aggregation cannot complete",
       "runtimeLimitsLabel": "Time limits",
-      "runtimeLimits": "Proposers {proposerTimeout}s · aggregator {aggregatorTimeout}s · {grace}s grace after the threshold",
+      "runtimeLimits": "Proposers {proposerTimeout}s total · aggregator {aggregatorTimeout}s idle between provider events (configured {configuredAggregatorTimeout}s) · outer turn deadline separate · {grace}s grace after the threshold",
       "quorumFailureLabel": "If fewer than {quorum} proposers succeed"
     },
     "behavior": {
@@ -3482,6 +3482,14 @@
         "interrupted": "Interrupted",
         "failed": "Failed"
       },
+      "provider": {
+        "waiting": "Waiting for model",
+        "reasoning": "Thinking deeply",
+        "rateLimited": "Rate limited · retrying in {seconds}s",
+        "retryWait": "Retrying in {seconds}s",
+        "retrying": "Retrying {attempt}/{limit}",
+        "fallback": "Switching to backup model"
+      },
       "purpose": {
         "discover": "Discovered links",
         "search": "Searched the web",
@@ -3807,6 +3815,7 @@
       "reorderHint": "Press and hold for 0.75 seconds, then drag to reorder. Alt+Arrow also moves this message.",
       "reorderStarted": "Reordering {label}. Drag to a new position, then release.",
       "reorderPosition": "{label} moved to position {position} of {count}.",
+      "reorderRecovering": "Restoring queue order…",
       "clearAll": "Clear all",
       "editMessage": "Edit message",
       "editWhileStreaming": "Wait for the current reply to finish before editing",
@@ -3902,6 +3911,9 @@
     "compact": {
       "compacting": "Organizing context…",
       "compacted": "Context organized",
+      "historyPreserved": "Earlier context summarized; original messages remain available in history",
+      "historyIncomplete": "Earlier context summarized; some original messages are unavailable",
+      "historySummarized": "Earlier context summarized",
       "failed": "Context organization failed",
       "withinBudget": "No organization needed; context has enough space",
       "skipped": "Context organization was not applied",
@@ -3933,7 +3945,6 @@
     "chips": {
       "whatCanYouDo": "What can you do?",
       "buildGame": "Build me a game",
-      "buildGamePrompt": "Build a playable browser-based voxel racing game prototype with responsive controls, acceleration and braking, a readable track, collision detection, checkpoints, lap timing, and a restart flow. Generate the voxel-style race car and scenery in code without paid assets. Run the game, test the controls, fix blocking issues, and then deliver it. Make the scenery more beautiful and the world open. Include OpenSquilla and TokenRhythm signage on the map as sponsor Easter eggs.",
       "summarizeWebpage": "Summarize a webpage for me",
       "planWeek": "Draft a plan for my week",
       "searchAiNews": "Search today's AI news",
@@ -3985,6 +3996,7 @@
       "waitCompactionBeforeCommand": "Wait for context compaction before running {command}.",
       "waitResponseBeforeCommand": "Wait for the current response before running {command}.",
       "queueFull": "Queue is full — wait for the current response to finish.",
+      "queuePersistenceUnavailable": "Keep this message in the composer until the fork finishes; durable recovery is unavailable.",
       "messageStillSaving": "This message hasn't finished saving — try again in a moment.",
       "artifactOpenFailed": "Artifact open failed. Use Download instead."
     },
