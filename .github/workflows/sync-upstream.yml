@@ -179,6 +179,10 @@ jobs:
             exit 0
           fi
           git remote add downstream "$DOWNSTREAM_REPO"
+          # The runner image ships no git identity; configure one so the
+          # amend below cannot fail with "empty ident name not allowed".
+          git config user.name "opensquilla-mac-intel bot"
+          git config user.email "actions@github.com"
           # [skip ci] prevents CI from running on this push
           git commit --amend -m "$(git log -1 --pretty=%B) [skip ci]" --allow-empty
           git push --force downstream HEAD:main

@@ -29,6 +29,7 @@ from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
 )
 from opensquilla.engine.turn_runner.outcome import StageOutcome
 from opensquilla.engine.types import ThinkingLevel
+from opensquilla.tools.types import ToolContext
 
 # ---------------------------------------------------------------------------
 # Recording fakes (one per port)
@@ -349,6 +350,23 @@ async def test_case01_success_all_defaults() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exclusive_tool_context_marks_agent_as_restricted_turn() -> None:
+    stage = _make_stage()
+
+    restricted = await stage.run(
+        _make_input(
+            tool_context=ToolContext(
+                exclusive_tools={"document_inspect"}
+            )
+        )
+    )
+    ordinary = await stage.run(_make_input(tool_context=ToolContext()))
+
+    assert restricted.output.agent_config.restricted_turn is True
+    assert ordinary.output.agent_config.restricted_turn is False
+
+
+@pytest.mark.asyncio
 async def test_length_capped_continuations_threads_to_agent_config() -> None:
     stage = _make_stage()
     inp = _make_input(length_capped_continuations=3)
@@ -651,6 +669,8 @@ async def test_case05_no_model_catalog_fallback() -> None:
     assert out.output.agent_config.max_tokens == 8192
     assert out.output.agent_config.context_window_tokens == 200_000
     assert out.output.model_capabilities is None
+    assert out.output.agent_config.metadata["resolved_output_cap_tokens"] == 8192
+    assert out.output.agent_config.metadata["resolved_context_window_tokens"] == 200_000
 
 
 @pytest.mark.asyncio

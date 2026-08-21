@@ -50,7 +50,14 @@
           :show-turn-outcome="isTurnTip(entry.index)"
           :is-streaming="isStreaming"
           :is-goal-source="isGoalSource(messages[entry.index])"
+          :can-reuse-prompt-annotations="canReusePromptAnnotations === true"
+          :workbench-resource-preview-enabled="workbenchResourcePreviewEnabled === true"
+          :workbench-resource-edit-enabled="workbenchResourceEditEnabled === true"
+          :workbench-attachment-resources="workbenchAttachmentResources"
           @edit="$emit('editMessage', $event)"
+          @edit-attachment="$emit('editAttachment', $event)"
+          @preview-attachment="$emit('previewAttachment', $event)"
+          @reuse-prompt-annotation="$emit('reusePromptAnnotation', $event)"
           @toggle-share="$emit('toggleShareMessage', $event)"
         />
         <CompactionEvent
@@ -77,6 +84,7 @@
           :workbench-enabled="workbenchEnabled"
           :artifact-navigation-items="artifactNavigationItems"
           :copy-message="copyMessage"
+          :regenerate-available="assistantRegenerateAvailable(entry.index)"
           :is-tip="isForkableAssistant(entry.index)"
           :fork-busy="forkBusy"
           :plan-action-pending="planActionPending"
@@ -106,7 +114,9 @@
           :message="messages[entry.index]"
           :subagent-summary="subagentSummary"
           :subagent-body="subagentBody"
+          :retry-available="usageBarrierRetryAvailable(entry.index)"
           @resume="$emit('resumeSandbox')"
+          @retry="forwardSystemRetry"
         />
       </div>
     </template>
@@ -147,7 +157,14 @@ import {
   type GoalSnapshot,
 } from '@/composables/chat/useChatGoals'
 import type { PlanCardAction, PlanCardActionTarget } from '@/types/plans'
+import type { PromptAnnotationSnapshot } from '@/types/promptAnnotations'
+import type { WorkbenchResource } from '@/types/workbenchResources'
 import { chatMessageKey } from '@/utils/chat/messageIdentity'
+import { applyProgrammaticScroll } from '@/utils/chat/scrollMutation'
+import {
+  isUsageAccountingBarrierMessage,
+  strictUsageBarrierRetryUserMessageIndex,
+} from '@/utils/chat/usageAccountingFailure'
 import {
   buildVariableWindow,
   CHAT_HISTORY_VIRTUALIZATION_THRESHOLD,
@@ -176,6 +193,10 @@ const props = defineProps<{
   sessionKey?: string
   authToken?: string
   workbenchEnabled?: boolean
+  workbenchResourcePreviewEnabled?: boolean
+  workbenchResourceEditEnabled?: boolean
+  workbenchAttachmentResources?: ReadonlyMap<string, WorkbenchResource>
+  canReusePromptAnnotations?: boolean
   forkBusy?: boolean
   planActionPending?: PlanCardAction | null
   planActionsDisabled?: boolean
@@ -192,9 +213,15 @@ const props = defineProps<{
   followLiveEdge?: boolean
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   editMessage: [message: ChatRenderedMessage]
-  regenerateMessage: [message: ChatRenderedMessage]
+  editAttachment: [attachment: import('@/types/chat').DisplayAttachment]
+  previewAttachment: [attachment: import('@/types/chat').DisplayAttachment]
+  reusePromptAnnotation: [annotation: PromptAnnotationSnapshot]
+  regenerateMessage: [
+    message: ChatRenderedMessage,
+    settle?: (accepted: boolean) => void,
+  ]
   toggleShareMessage: [messageId: string]
   downloadArtifact: [artifact: ArtifactPayload]
   openArtifact: [artifact: ArtifactPayload]
@@ -215,6 +242,28 @@ defineEmits<{
 
 const VIRTUALIZATION_STORAGE_KEY = 'opensquilla.chat.virtualizeHistory'
 const MESSAGE_GAP_PX = 4
+
+function forwardSystemRetry(
+  message: ChatRenderedMessage,
+  settle: (accepted: boolean) => void,
+) {
+  emit('regenerateMessage', message, settle)
+}
+
+function usageBarrierRetryAvailable(index: number): boolean {
+  const message = props.messages[index]
+  return Boolean(
+    message
+    && isUsageAccountingBarrierMessage(message)
+    && strictUsageBarrierRetryUserMessageIndex(props.messages, index, message) >= 0,
+  )
+}
+
+function assistantRegenerateAvailable(index: number): boolean {
+  const message = props.messages[index]
+  if (!message || !isUsageAccountingBarrierMessage(message)) return true
+  return strictUsageBarrierRetryUserMessageIndex(props.messages, index, message) >= 0
+}
 
 const listRootRef = ref<HTMLElement | null>(null)
 const viewportStart = ref(0)
@@ -372,7 +421,9 @@ function queueAnchorAdjustment(delta: number) {
     const adjustment = pendingAnchorAdjustment
     pendingAnchorAdjustment = 0
     if (!props.scrollContainer || props.scrollContainer !== container) return
-    container.scrollTop += adjustment
+    applyProgrammaticScroll(container, () => {
+      container.scrollTop += adjustment
+    })
     scheduleViewportMeasure()
   })
 }
@@ -384,7 +435,9 @@ function queueLiveEdgePin() {
   void nextTick(() => {
     liveEdgePinScheduled = false
     if (!props.followLiveEdge || props.scrollContainer !== container) return
-    container.scrollTop = container.scrollHeight
+    applyProgrammaticScroll(container, () => {
+      container.scrollTop = container.scrollHeight
+    })
     scheduleViewportMeasure()
   })
 }
@@ -494,7 +547,15 @@ function attachContainer(container: HTMLElement | null | undefined) {
   container.addEventListener('focusin', onContainerFocusIn)
   container.addEventListener('focusout', onContainerFocusOut)
   if (typeof ResizeObserver !== 'undefined') {
-    viewportResizeObserver = new ResizeObserver(scheduleViewportMeasure)
+    viewportResizeObserver = new ResizeObserver(entries => {
+      scheduleViewportMeasure()
+      // A container-height change has no new stream event to trigger the
+      // ordinary bottom pin. Keep a reader already following the live edge at
+      // the true bottom; historical readers retain their existing anchor.
+      if (props.followLiveEdge && entries.some(entry => entry.target === container)) {
+        queueLiveEdgePin()
+      }
+    })
     viewportResizeObserver.observe(container)
     if (listRootRef.value) viewportResizeObserver.observe(listRootRef.value)
   }

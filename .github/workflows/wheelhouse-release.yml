@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Optional existing tag to upload artifacts to
+        description: Existing tag to upload; leave empty for an internal test-package artifact
         required: false
         default: ""
 
@@ -20,6 +20,9 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+  OSSUTIL_VERSION: "2.3.0"
+  OSSUTIL_ZIP: ossutil-2.3.0-linux-amd64.zip
+  OSSUTIL_SHA256: 3ae4d9fc85a7a6e9f5654d1599766f1a3a42a3692870887b5ae9338d582ef65a
 
 jobs:
   build-control-ui:
@@ -180,7 +183,6 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
-          npm run fetch:runtimes
           npm run build:gateway
           npm run build
           npx electron-builder --mac --x64 --publish never
@@ -188,6 +190,12 @@ jobs:
       - name: Verify Electron package
         working-directory: desktop/electron
         run: npm run verify:package
+
+      - name: Enforce slim macOS artifact size budgets
+        run: >-
+          python .github/scripts/verify_desktop_slim_size.py
+          --root dist/desktop-electron
+          --platform macos
 
       - name: Smoke packaged gateway
         working-directory: desktop/electron

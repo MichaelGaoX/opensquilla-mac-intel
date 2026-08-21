@@ -244,6 +244,8 @@ def _render_tier_overrides(tiers: dict[str, dict[str, Any]] | None) -> str:
             "thinking_level",
             "thinking",
             "supports_thinking",
+            "ensemble_enabled",
+            "ensemble_selection_mode",
         ):
             if key in cfg and cfg[key] is not None:
                 lines.append(f"{key} = {_toml_value(cfg[key])}")
@@ -724,7 +726,8 @@ def _run_provider(provider: str, *, max_tokens: int, timeout_seconds: float) -> 
     requested_base_url = os.environ.get(BASE_ENV.get(provider, ""), "").strip()
     base_url = registry_endpoint(provider, requested_base_url or None)
     tiers = _profile_tiers(provider)
-    max_tokens = max(max_tokens, 1024) if provider == "tokenrhythm" else max_tokens
+    # This is a live-profile test floor, not a product default or runtime clamp.
+    max_tokens = max(max_tokens, 4096) if provider == "tokenrhythm" else max_tokens
     slot_targets = _profile_slot_targets(tiers)
     if not api_key:
         return {

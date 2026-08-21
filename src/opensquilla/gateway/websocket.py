@@ -34,8 +34,14 @@ from opensquilla.gateway.protocol import (
     SnapshotInfo,
     make_error_res,
     make_event,
+    project_session_event_for_client,
 )
 from opensquilla.gateway.rpc import RpcContext, RpcDispatcher
+from opensquilla.gateway.rpc.ingress import (
+    RpcIngressValidationError,
+    is_utf8_encodable,
+    validate_rpc_ingress,
+)
 from opensquilla.sandbox.legacy_codec import encode_payload_for_protocol
 
 log = structlog.get_logger(__name__)
@@ -87,11 +93,30 @@ _CONCURRENT_OPTIONAL_READ_METHODS: frozenset[str] = frozenset(
         "workspaces.list",
     }
 )
-_DETACHED_RPC_METHODS: frozenset[str] = frozenset({"meta.drafts.list"}).union(
+_DETACHED_RPC_METHODS: frozenset[str] = frozenset(
+    {"meta.drafts.list", "skills.install"}
+).union(
     _CONCURRENT_OPTIONAL_READ_METHODS
 )
-_MAX_DETACHED_REQUESTS_PER_CONNECTION = 4
+# Reserve one bounded slot for every method that may legitimately run detached.
+# A fresh WebUI can issue every optional metadata read plus draft recovery before
+# the first responses arrive; keeping this derived from the allowlist prevents a
+# newly advertised read from silently outgrowing the bootstrap budget again.
+_MAX_DETACHED_REQUESTS_PER_CONNECTION = len(_DETACHED_RPC_METHODS)
 _DETACHED_REQUEST_DRAIN_SECONDS = 0.25
+
+
+def _should_detach_rpc_request(method: str, params: Any) -> bool:
+    if method not in _DETACHED_RPC_METHODS:
+        return False
+    if method != "skills.install":
+        return True
+    if not isinstance(params, dict):
+        return False
+    return any(
+        isinstance(params.get(key), str) and bool(params[key].strip())
+        for key in ("operationId", "operation_id")
+    )
 
 
 @dataclass(slots=True)
@@ -127,6 +152,7 @@ class WsConnection:
     conn_id: str
     ws: WebSocket
     protocol: int = PROTOCOL_VERSION
+    client_caps: frozenset[str] = field(default_factory=frozenset)
     principal: Principal = field(
         default_factory=lambda: Principal(
             role="operator",
@@ -308,6 +334,14 @@ class WsConnection:
     ) -> None:
         if self._closing:
             return
+        projected = project_session_event_for_client(
+            event,
+            payload,
+            client_caps=self.client_caps,
+        )
+        if projected is None:
+            return
+        event, payload = projected
         # Atomic check + enqueue. The check and ``put_nowait`` are part of
         # one synchronous flow with no ``await`` between them, so
         # ``_force_close`` cannot flip ``_closing`` mid-flight (asyncio is
@@ -853,11 +887,7 @@ def _is_wire_text(value: str) -> bool:
     into a response frame makes ``model_dump_json`` raise at send time, long
     after the handler ran.
     """
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
+    return is_utf8_encodable(value)
 
 
 def _wire_frame_id(raw_id: Any, fallback: str = "") -> str:
@@ -956,6 +986,20 @@ async def handle_ws_connection(
         await conn.close()
         return
 
+    try:
+        validate_rpc_ingress(data)
+    except RpcIngressValidationError as exc:
+        await conn.send_res(
+            make_error_res(
+                _wire_frame_id(data.get("id"), "handshake"),
+                "INVALID_REQUEST",
+                str(exc),
+                details={"reason": exc.reason},
+            )
+        )
+        await conn.close()
+        return
+
     if data.get("type") != "req" or data.get("method") != "connect":
         await conn.send_res(
             make_error_res(
@@ -1031,6 +1075,14 @@ async def handle_ws_connection(
     # Assign principal
     conn.principal = principal
     conn.protocol = negotiated
+    requested_caps = params_raw.get("caps")
+    conn.client_caps = frozenset(
+        capability
+        for capability in (
+            requested_caps[:128] if isinstance(requested_caps, list) else ()
+        )
+        if isinstance(capability, str) and capability and len(capability) <= 128
+    )
 
     # Step 6: Send HelloOk
     hello = HelloOk(
@@ -1245,6 +1297,19 @@ async def _message_loop(
             )
             continue
 
+        try:
+            validate_rpc_ingress(data)
+        except RpcIngressValidationError as exc:
+            await conn.send_res(
+                make_error_res(
+                    _wire_frame_id(data.get("id")),
+                    "INVALID_REQUEST",
+                    str(exc),
+                    details={"reason": exc.reason},
+                )
+            )
+            continue
+
         frame_type = data.get("type")
 
         if frame_type == "ping":
@@ -1298,7 +1363,11 @@ async def _message_loop(
                 meta_run_writer=meta_run_writer,
                 skill_loader=skill_loader,
                 skill_management_service=skill_management_service,
-                skill_management_state=skill_management_state or {},
+                skill_management_state=(
+                    skill_management_state
+                    if skill_management_state is not None
+                    else {}
+                ),
                 cron_scheduler=cron_scheduler,
                 turn_runner=turn_runner,
                 task_runtime=task_runtime,
@@ -1313,7 +1382,7 @@ async def _message_loop(
                 memory_stores=memory_stores or {},
                 memory_retrievers=memory_retrievers or {},
             )
-            if method in _DETACHED_RPC_METHODS:
+            if _should_detach_rpc_request(method, params):
                 if (
                     len(conn._detached_request_tasks)
                     >= _MAX_DETACHED_REQUESTS_PER_CONNECTION
@@ -1322,7 +1391,7 @@ async def _message_loop(
                         make_error_res(
                             req_id,
                             ERROR_UNAVAILABLE,
-                            "Too many optional recovery requests are already running",
+                            "Too many detached requests are already running",
                             retryable=True,
                         )
                     )
@@ -1384,6 +1453,7 @@ async def _dispatch_and_send(
 
 
 def _build_features(dispatcher: RpcDispatcher) -> Any:
+    from opensquilla.contracts.gateway_transport import TURN_COMMITTED_EVENT
     from opensquilla.gateway.protocol import FeaturesInfo
 
     methods = dispatcher.list_methods()
@@ -1398,5 +1468,6 @@ def _build_features(dispatcher: RpcDispatcher) -> Any:
         "health",
         "heartbeat",
         "cron",
+        TURN_COMMITTED_EVENT,
     ]
     return FeaturesInfo(methods=methods, events=events)

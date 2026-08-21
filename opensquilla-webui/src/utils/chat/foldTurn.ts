@@ -15,7 +15,7 @@ import type {
   StatusPart,
 } from '@/types/parts'
 import type { ArtifactPayload } from '@/types/rpc'
-import type { Frame } from '@/types/turnlog'
+import type { Frame, ReasoningBlock } from '@/types/turnlog'
 import {
   isEmptyToolPreview,
   toolDisplayName,
@@ -34,6 +34,7 @@ export interface FoldedTurn {
   rawText: string
   // Live-only extras (not part of the toParts surface):
   thinkingText: string
+  reasoningBlocks: ReasoningBlock[]
   toolTimes: Map<string, { startedAt: number; endedAt?: number }>
   // Derived parts (reuse toParts/toSources, do not reimplement):
   parts: ChatPart[]
@@ -61,11 +62,11 @@ export interface ReconciledTextSnapshot {
 /**
  * Apply an authoritative terminal text snapshot without losing tool history.
  *
- * A strict extension is still an ordinary suffix and therefore stays after the
- * last streamed segment. A conflicting snapshot supersedes every streamed text
- * segment, but keeps tool groups in arrival order and places the one canonical
- * text segment after them. An empty snapshot intentionally clears text while
- * retaining those tool groups.
+ * A strict extension is still an ordinary answer suffix and therefore stays
+ * after the last streamed answer segment. A conflicting snapshot supersedes
+ * streamed answer text, but keeps tool groups and intermediate commentary in
+ * arrival order before the canonical answer. An empty snapshot intentionally
+ * clears answer text while retaining that work history.
  */
 export function reconcileTextSnapshot(
   segments: ChatStreamSegment[],
@@ -80,7 +81,7 @@ export function reconcileTextSnapshot(
     const suffix = snapshot.slice(accumulatedText.length)
     const next = segments.slice()
     const last = next[next.length - 1]
-    if (last?.type === 'text') {
+    if (last?.type === 'text' && last.presentation !== 'intermediate') {
       next[next.length - 1] = {
         ...last,
         raw: `${last.raw || ''}${suffix}`,
@@ -92,7 +93,9 @@ export function reconcileTextSnapshot(
     return { rawText: snapshot, segments: next, changed: true }
   }
 
-  const next = segments.filter(segment => segment.type !== 'text')
+  const next = segments.filter(segment => (
+    segment.type !== 'text' || segment.presentation === 'intermediate'
+  ))
   if (snapshot) {
     next.push({ type: 'text', raw: snapshot, html: '', dirty: true, presentation: 'answer' })
   }
@@ -167,6 +170,8 @@ export class TurnAccumulator {
   private rawText = ''
   private finalText: string | null = null
   private thinkingText = ''
+  private reasoningBlocks: ReasoningBlock[] = []
+  private reasoningBlocksById = new Map<string, ReasoningBlock>()
   private toolGroupSeq = 0
 
   reset(): void {
@@ -184,6 +189,8 @@ export class TurnAccumulator {
     this.rawText = ''
     this.finalText = null
     this.thinkingText = ''
+    this.reasoningBlocks = []
+    this.reasoningBlocksById = new Map()
     this.toolGroupSeq = 0
   }
 
@@ -202,6 +209,39 @@ export class TurnAccumulator {
    */
   currentRawText(): string {
     return this.finalText ?? this.rawText
+  }
+
+  private ensureReasoningBlock(
+    blockId: string | undefined,
+    blockIndex: number | undefined,
+    at: number,
+    contentKind: 'summary' | 'reasoning' = 'reasoning',
+  ): ReasoningBlock {
+    const id = blockId || 'legacy-reasoning'
+    const existing = this.reasoningBlocksById.get(id)
+    if (existing) return existing
+
+    const active = [...this.reasoningBlocks]
+      .reverse()
+      .find(block => block.status === 'streaming')
+    if (active && active.id !== id) {
+      active.status = 'completed'
+      active.endedAt = at
+    }
+
+    const block: ReasoningBlock = {
+      id,
+      index: typeof blockIndex === 'number' && blockIndex >= 0
+        ? blockIndex
+        : this.reasoningBlocks.length,
+      text: '',
+      status: 'streaming',
+      startedAt: at,
+      contentKind,
+    }
+    this.reasoningBlocks.push(block)
+    this.reasoningBlocksById.set(id, block)
+    return block
   }
 
   private replaceToolInput(call: ChatToolCall, input: string): void {
@@ -344,9 +384,34 @@ export class TurnAccumulator {
       case 'artifact':
         this.artifacts.push(frame.artifact)
         break
-      case 'thinking':
-        this.thinkingText += frame.text
+      case 'thinking-start':
+        this.ensureReasoningBlock(
+          frame.blockId,
+          frame.blockIndex,
+          frame.at,
+          frame.contentKind,
+        )
         break
+      case 'thinking': {
+        this.thinkingText += frame.text
+        const block = this.ensureReasoningBlock(
+          frame.blockId,
+          frame.blockIndex,
+          frame.at,
+        )
+        block.text += frame.text
+        break
+      }
+      case 'thinking-end': {
+        const block = this.ensureReasoningBlock(
+          frame.blockId,
+          frame.blockIndex,
+          frame.at,
+        )
+        block.status = frame.status
+        block.endedAt = frame.at
+        break
+      }
       case 'final-text':
         this.finalText = frame.text
         break
@@ -467,6 +532,7 @@ export class TurnAccumulator {
       data: { ...interrupt.data },
     }))
     const statusHistory = this.statusHistory.map(entry => ({ ...entry }))
+    const reasoningBlocks = this.reasoningBlocks.map(block => ({ ...block }))
 
     const interruptParts = new Map<
       string,
@@ -499,7 +565,7 @@ export class TurnAccumulator {
     const timelineSegments = segments.flatMap((segment): ChatTimelineSegment[] => {
       if (segment.type === 'text') {
         const raw = String(segment.raw || '')
-        return raw ? [{ type: 'text', raw }] : []
+        return raw ? [{ type: 'text', raw, presentation: segment.presentation }] : []
       }
       if (segment.type === 'interrupt') {
         const approvalId = String(segment.approvalId || '')
@@ -521,6 +587,7 @@ export class TurnAccumulator {
     return {
       ...base,
       thinkingText: this.thinkingText,
+      reasoningBlocks,
       toolTimes: new Map(
         [...this.toolTimes].map(([key, value]) => [key, { ...value }]),
       ),
@@ -566,7 +633,48 @@ export function foldTurn(
   let rawText = ''
   let finalText: string | null = null
   let thinkingText = ''
+  const reasoningBlocks: ReasoningBlock[] = []
+  const reasoningBlocksById = new Map<string, ReasoningBlock>()
   let toolGroupSeq = 0
+
+  function ensureReasoningBlock(
+    blockId: string | undefined,
+    blockIndex: number | undefined,
+    at: number,
+    contentKind: 'summary' | 'reasoning' = 'reasoning',
+  ): ReasoningBlock {
+    const id = blockId || 'legacy-reasoning'
+    const existing = reasoningBlocksById.get(id)
+    if (existing) return existing
+
+    // A new explicit block is an authoritative boundary. If an older producer
+    // omitted its matching end event, settle only the previously active block
+    // instead of merging both streams together.
+    let active: ReasoningBlock | undefined
+    for (let index = reasoningBlocks.length - 1; index >= 0; index -= 1) {
+      if (reasoningBlocks[index]?.status === 'streaming') {
+        active = reasoningBlocks[index]
+        break
+      }
+    }
+    if (active && active.id !== id) {
+      active.status = 'completed'
+      active.endedAt = at
+    }
+    const block: ReasoningBlock = {
+      id,
+      index: typeof blockIndex === 'number' && blockIndex >= 0
+        ? blockIndex
+        : reasoningBlocks.length,
+      text: '',
+      status: 'streaming',
+      startedAt: at,
+      contentKind,
+    }
+    reasoningBlocks.push(block)
+    reasoningBlocksById.set(id, block)
+    return block
+  }
 
   // Mirror ensureStreamToolCall's group derivation: a tool joins the trailing
   // tool-group segment when the operationKey matches, else opens a new group
@@ -668,8 +776,33 @@ export function foldTurn(
         artifacts.push(frame.artifact)
         break
       }
+      case 'thinking-start': {
+        ensureReasoningBlock(
+          frame.blockId,
+          frame.blockIndex,
+          frame.at,
+          frame.contentKind,
+        )
+        break
+      }
       case 'thinking': {
         thinkingText += frame.text
+        const block = ensureReasoningBlock(
+          frame.blockId,
+          frame.blockIndex,
+          frame.at,
+        )
+        block.text += frame.text
+        break
+      }
+      case 'thinking-end': {
+        const block = ensureReasoningBlock(
+          frame.blockId,
+          frame.blockIndex,
+          frame.at,
+        )
+        block.status = frame.status
+        block.endedAt = frame.at
         break
       }
       case 'final-text': {
@@ -778,7 +911,7 @@ export function foldTurn(
   const timelineSegments = segments.flatMap((segment): ChatTimelineSegment[] => {
     if (segment.type === 'text') {
       const raw = String(segment.raw || '')
-      return raw ? [{ type: 'text', raw }] : []
+      return raw ? [{ type: 'text', raw, presentation: segment.presentation }] : []
     }
     if (segment.type === 'interrupt') {
       const approvalId = String(segment.approvalId || '')
@@ -796,6 +929,7 @@ export function foldTurn(
   return {
     ...base,
     thinkingText,
+    reasoningBlocks,
     toolTimes,
     statusHistory,
     timelineSegments,

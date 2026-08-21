@@ -21,6 +21,8 @@ from fnmatch import fnmatchcase
 from typing import Literal
 from urllib.parse import urlsplit
 
+from opensquilla.endpoint_identity import base_url_matches_official_api
+
 from .model_identity import DEEPSEEK_V4_MODEL_IDS
 from .qwen_token_plan import (
     QWEN_TOKEN_PLAN_DEEPSEEK_V4_MODEL_IDS,
@@ -190,6 +192,17 @@ class OpenAICompatPolicy:
     # JSON Schema keywords the upstream rejects in tool definitions.
     tool_schema_unsupported_keywords: frozenset[str] = frozenset()
 
+    # Tool names whose itemless arrays may be projected to string items on
+    # this provider's official endpoint. This is deliberately allowlisted:
+    # an itemless JSON Schema array accepts arbitrary values, so a string
+    # fallback is safe only when the tool's wire semantics are textual.
+    tool_schema_string_item_fallback_tools: frozenset[str] = frozenset()
+
+    # Exact API root where the string-item projection is required. A tool
+    # allowlist alone is not sufficient evidence for custom endpoints that
+    # happen to use the same provider kind or hostname.
+    tool_schema_string_item_fallback_api_root: str = ""
+
     # Whether the chat-completions endpoint reliably supports native
     # ``response_format.type=json_schema``.  When false, the OpenAI-compatible
     # adapter keeps the same provider/model and places the authoritative
@@ -257,6 +270,12 @@ class OpenAICompatPolicy:
 
     # Reasoning format assumed when no model capabilities are available.
     default_reasoning_format: str = ""
+
+    # One provider-native reasoning dialect may be valid only at an exact API
+    # root. A custom endpoint using another explicitly configured dialect is
+    # unaffected, and an empty pair leaves compatible relays unrestricted.
+    official_reasoning_dialect: str = ""
+    official_reasoning_api_root: str = ""
 
     # Models that need an explicit thinking enable/disable payload even when
     # no capability profile is available (exact ids, lowercase).
@@ -332,6 +351,41 @@ class OpenAICompatPolicy:
         """
 
         return self.text_tool_profile.enabled
+
+    def allows_string_item_schema_projection(self, tool_name: str, base_url: str) -> bool:
+        """Return whether a trusted tool may use the lossy wire projection."""
+
+        candidate_base_url = str(base_url or "")
+        if not candidate_base_url or candidate_base_url != candidate_base_url.strip():
+            return False
+        return bool(
+            tool_name in self.tool_schema_string_item_fallback_tools
+            and self.tool_schema_string_item_fallback_api_root
+            and base_url_matches_official_api(
+                self.tool_schema_string_item_fallback_api_root,
+                candidate_base_url,
+            )
+        )
+
+
+def effective_reasoning_format(
+    policy: OpenAICompatPolicy,
+    reasoning_format: str,
+    base_url: str,
+) -> str:
+    """Suppress a provider-native dialect outside its exact official API root."""
+
+    restricted_dialect = policy.official_reasoning_dialect.strip().lower()
+    if (
+        restricted_dialect
+        and reasoning_format.strip().lower() == restricted_dialect
+        and not base_url_matches_official_api(
+            policy.official_reasoning_api_root,
+            base_url,
+        )
+    ):
+        return ""
+    return reasoning_format
 
 
 _ARK_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS = frozenset(
@@ -417,7 +471,14 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
         thinking_toggle_model_ids=DEEPSEEK_V4_MODEL_IDS,
         require_reasoning_content_model_ids=DEEPSEEK_V4_MODEL_IDS,
     ),
-    "gemini": OpenAICompatPolicy(display_name="Gemini"),
+    "gemini": OpenAICompatPolicy(
+        display_name="Gemini",
+        official_host="generativelanguage.googleapis.com",
+        tool_schema_string_item_fallback_tools=frozenset({"create_csv"}),
+        tool_schema_string_item_fallback_api_root=(
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        ),
+    ),
     "dashscope": OpenAICompatPolicy(
         display_name="DashScope",
         text_tool_profile=TextToolCompatProfile(
@@ -477,7 +538,12 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
     "mimo": OpenAICompatPolicy(display_name="MiMo"),
     "mistral": OpenAICompatPolicy(display_name="Mistral"),
     "groq": OpenAICompatPolicy(display_name="Groq"),
-    "zhipu": OpenAICompatPolicy(display_name="Zhipu"),
+    "zhipu": OpenAICompatPolicy(
+        display_name="Zhipu",
+        official_host="open.bigmodel.cn",
+        official_reasoning_dialect="zai",
+        official_reasoning_api_root="https://open.bigmodel.cn/api/paas/v4",
+    ),
     "qianfan": OpenAICompatPolicy(display_name="Qianfan"),
     "siliconflow": OpenAICompatPolicy(display_name="SiliconFlow"),
     "aihubmix": OpenAICompatPolicy(display_name="AiHubMix"),
@@ -502,6 +568,7 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
     "tokenrhythm": OpenAICompatPolicy(
         display_name="TokenRhythm",
         official_host="tokenrhythm.studio",
+        supports_explicit_prompt_cache=True,
         supports_native_json_schema_output=False,
         text_tool_profile=TextToolCompatProfile(
             model_rules=(

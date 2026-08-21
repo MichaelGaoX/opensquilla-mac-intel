@@ -105,7 +105,7 @@ def create_gateway_app(
         if result.error is None:
             return default
         code = result.error.code
-        if code == "INVALID_REQUEST":
+        if code in {"INVALID_PARAMS", "INVALID_REQUEST"}:
             return 400
         if code == "UNAUTHORIZED":
             return 403
@@ -195,6 +195,9 @@ def create_gateway_app(
         view = request.query_params.get("view")
         if view:
             params["view"] = view
+        cursor = request.query_params.get("cursor")
+        if cursor is not None:
+            params["cursor"] = cursor
         result = await dispatcher.dispatch("_http", "sessions.list", params or None, ctx)
         if result.ok:
             return _with_http_guest_cookie(
@@ -481,7 +484,9 @@ def create_gateway_app(
             meta_run_writer=meta_run_writer,
             skill_loader=skill_loader,
             skill_management_service=skill_management_service,
-            skill_management_state=skill_management_state or {},
+            skill_management_state=(
+                skill_management_state if skill_management_state is not None else {}
+            ),
             cron_scheduler=cron_scheduler,
             turn_runner=turn_runner,
             task_runtime=task_runtime,
@@ -745,7 +750,9 @@ def create_gateway_app(
             usage_event_sink=usage_event_sink,
             meta_run_writer=meta_run_writer,
             skill_loader=skill_loader,
-            skill_management_state=skill_management_state or {},
+            skill_management_state=(
+                skill_management_state if skill_management_state is not None else {}
+            ),
             cron_scheduler=cron_scheduler,
             turn_runner=turn_runner,
             task_runtime=task_runtime,
