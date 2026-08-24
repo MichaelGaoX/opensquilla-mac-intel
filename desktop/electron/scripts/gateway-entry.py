@@ -38,6 +38,16 @@ if __name__ == "__main__":
 
         raise SystemExit(dispatch_internal_child(sys.argv[2:]))
 
+    # Frozen (PyInstaller) environment: process-tree helpers are spawned with
+    # arguments directly on sys.executable (the bootloader).  Dispatch to
+    # process_tree._main() which understands --posix-group-anchor and
+    # --posix-owned-launch.
+    _PROCESS_TREE_ARGS = ("--posix-group-anchor", "--posix-owned-launch")
+    if sys.argv[1:2] and sys.argv[1] in _PROCESS_TREE_ARGS:
+        from opensquilla.process_tree import _main as _process_tree_main
+
+        raise SystemExit(_process_tree_main())
+
     if len(sys.argv) == 3 and sys.argv[1] == "--elevated-helper":
         from opensquilla.sandbox.backend.windows_default_setup import (
             elevated_setup_helper_main,

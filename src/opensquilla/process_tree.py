@@ -1815,6 +1815,21 @@ async def _stop_unarmed_posix_anchor(anchor: _PosixGroupAnchor) -> None:
         await _wait_direct_process(anchor.process, 1.0)
 
 
+def _posix_anchor_argv(*args: str) -> list[str]:
+    """Build the argv for spawning a process-tree helper (anchor or owned-launch).
+
+    In a normal (non-frozen) Python environment we use ``python -m
+    opensquilla.process_tree`` so the helper runs as a normal module.  In a
+    frozen (PyInstaller) environment ``sys.executable`` is the bootloader
+    binary; ``-m`` is not understood, so we pass the arguments directly and
+    rely on the entry-point script (gateway-entry.py) to dispatch to
+    ``process_tree._main()``.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, *args]
+    return [sys.executable, "-m", "opensquilla.process_tree", *args]
+
+
 async def _create_posix_anchor(
     owner_id: str | None = None,
     *,
@@ -1824,12 +1839,11 @@ async def _create_posix_anchor(
     if control_path is not None:
         _prepare_private_directory(control_path.parent)
     process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "opensquilla.process_tree",
-        "--posix-group-anchor",
-        owner_id,
-        *(str(control_path) if control_path is not None else "-",),
+        *_posix_anchor_argv(
+            "--posix-group-anchor",
+            owner_id,
+            str(control_path) if control_path is not None else "-",
+        ),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -1977,14 +1991,13 @@ async def _create_owned_posix_subprocess(
             status_write_fd,
         )
         process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "opensquilla.process_tree",
-            "--posix-owned-launch",
-            str(gate.read_fd),
-            str(status_write_fd),
-            "--",
-            *argv,
+            *_posix_anchor_argv(
+                "--posix-owned-launch",
+                str(gate.read_fd),
+                str(status_write_fd),
+                "--",
+                *argv,
+            ),
             **child_kwargs,
         )
         gate.close_child_end()
