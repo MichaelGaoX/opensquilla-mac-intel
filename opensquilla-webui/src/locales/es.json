@@ -180,6 +180,7 @@
       "readyWithWarnings": "La vista previa se está ejecutando con advertencias.",
       "warningsShort": "Advertencias",
       "suspended": "Vista previa en pausa",
+      "agentEditInProgress": "La edición continúa en segundo plano.",
       "nativePreview": "Vista previa interactiva",
       "allowRemoteResources": "Permitir imágenes, estilos y contenido multimedia en línea",
       "blockRemoteResources": "Bloquear imágenes, estilos y contenido multimedia en línea",
@@ -586,12 +587,12 @@
         "title": "Paquetes de ejecución", "description": "Las descargas se activan automáticamente. Seguro prioriza los paquetes instalados; Acceso completo mantiene primero las herramientas del sistema.", "target": "Destino de ejecución",
         "allowRuntime": "Permitir {runtime}", "progress": "Descarga de {runtime}: {progress}%",
         "states": {
-          "unknown": "Estado no disponible", "notInstalled": "No instalado", "disabled": "No activado", "installed": "Instalado", "installedVersion": "Instalado · {version}",
+          "unknown": "Estado no disponible", "notInstalled": "No instalado", "disabled": "No activado", "installed": "Instalado", "installedVersion": "Instalado · {version}", "updatePaused": "Actualización en pausa",
           "unsupported": "No disponible para este sistema", "corrupt": "Requiere reparación", "queued": "Esperando la descarga", "downloading": "Descargando", "downloadingProgress": "Descargando · {progress}%",
           "verifying": "Verificando la descarga", "extracting": "Instalando", "probing": "Comprobando el entorno", "activating": "Finalizando la instalación", "cancelling": "Cancelando", "queuedRemoval": "Esperando para eliminar", "removing": "Eliminando",
           "cancelled": "Descarga cancelada", "failed": "Error de descarga", "removeFailed": "Error al eliminar", "removeInterrupted": "Eliminación interrumpida", "interrupted": "Descarga pausada"
         },
-        "actions": { "enable": "Activar", "download": "Descargar", "cancel": "Cancelar", "resume": "Continuar", "retry": "Reintentar", "repair": "Reparar", "remove": "Eliminar", "retryRemove": "Reintentar eliminación" },
+        "actions": { "enable": "Activar", "download": "Descargar", "cancel": "Cancelar", "discardDownload": "Descartar descarga", "resume": "Continuar", "retry": "Reintentar", "repair": "Reparar", "remove": "Eliminar", "retryRemove": "Reintentar eliminación" },
         "sources": { "oss": "OSS de Pekín", "github": "Versiones de GitHub" }
       },
       "lan": {
@@ -3653,7 +3654,8 @@
       },
       "more": "{count} más",
       "stale": "Sigue trabajando — sin señal reciente",
-      "liveStep": "paso {n}"
+      "liveStep": "paso {n}",
+      "recordIncomplete": "El registro de actividad está incompleto; se muestra la vista de historial compatible."
     },
     "suggestedTasks": "Tareas sugeridas",
     "greetingMorning": "Buenos días.",
@@ -4315,7 +4317,22 @@
       "activityContentSize": "{lines} líneas · {characters} caracteres",
       "activityExitCode": "Código de salida {code}",
       "activityNotCompleted": "No se completó",
-      "activityPublished": "Publicado"
+      "activityPublished": "Publicado",
+      "documentErrorCategory": "Categoría: {category} ({code})",
+      "documentPreviewUnavailableCategory": "Vista previa no disponible",
+      "documentActionUnknownCategory": "Resultado de la acción desconocido",
+      "documentEditFailedCategory": "Error al editar el documento",
+      "documentPreviewUnavailableMessage": "La vista previa de edición no está disponible. No se aplicaron cambios sin confirmar.",
+      "documentActionUnknownMessage": "Es posible que la acción se haya ejecutado. Inspecciona la vista previa antes de continuar.",
+      "documentEditFailedMessage": "La operación del documento no se completó.",
+      "documentRetrySameTurn": "Política de reintento: continuar en esta tarea",
+      "documentRetryNewTurn": "Política de reintento: iniciar una tarea nueva",
+      "documentRetryNever": "Política de reintento: no reintentar",
+      "documentNextRetry": "Siguiente paso: reintentar",
+      "documentNextReinspect": "Siguiente paso: inspeccionar de nuevo",
+      "documentNextFinalize": "Siguiente paso: finalizar sin más herramientas",
+      "documentNextNewTurn": "Siguiente paso: iniciar una tarea nueva",
+      "documentNextStop": "Siguiente paso: detener"
     }
   },
   "channelStatus": {
